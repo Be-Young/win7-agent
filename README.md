@@ -5,6 +5,8 @@ Two trial editions are included:
 - Full EXE edition: Go 1.20 source for a Windows 7 x64 `agent.exe`.
 - Script Lite edition: `agent.cmd` + `agent.js`, intended for email trials when EXE attachments are blocked.
 
+中文用户请先阅读：[中文操作手册](docs/user-manual-zh.md)。
+
 ## Full EXE Edition
 
 Build on a machine with Go 1.20:
