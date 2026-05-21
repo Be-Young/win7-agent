@@ -1,0 +1,36 @@
+{
+  "base_url": "http://127.0.0.1:8000/v1/chat/completions",
+  "model": "local-model",
+  "api_key": "",
+  "stream": false,
+  "timeout_seconds": 120,
+  "ca_file": "",
+  "insecure_skip_verify": false,
+  "headers": {},
+  "auth_profiles": {
+    "example-portal": {
+      "match": "intranet.example.local",
+      "headers": {
+        "Cookie": "SESSION=replace-me"
+      },
+      "cookie": "",
+      "basic_username": "",
+      "basic_password": ""
+    }
+  },
+  "command": {
+    "enabled": false,
+    "allowed_prefixes": [
+      "dir",
+      "type",
+      "findstr",
+      "where",
+      "ver",
+      "echo"
+    ],
+    "always_confirm": true,
+    "audit_log": "logs/commands.log",
+    "max_output_bytes": 65536
+  },
+  "max_content_chars": 120000
+}

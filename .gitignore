@@ -1,0 +1,6 @@
+dist/
+logs/
+sessions/
+config/agent.json
+.DS_Store
+._*
