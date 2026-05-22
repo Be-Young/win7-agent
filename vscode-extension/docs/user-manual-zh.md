@@ -9,7 +9,7 @@
 
 ## 安装
 
-1. 将 `win7-agent-vscode-0.4.1.vsix` 传入内网电脑。
+1. 将 `win7-agent-vscode-0.4.2.vsix` 传入内网电脑。
 2. 打开 VS Code。
 3. 进入扩展面板，点击右上角 `...`。
 4. 选择 `Install from VSIX...`，选中该 `.vsix` 文件。
@@ -18,7 +18,7 @@
 也可以在命令行安装：
 
 ```bat
-code --install-extension win7-agent-vscode-0.4.1.vsix
+code --install-extension win7-agent-vscode-0.4.2.vsix
 ```
 
 ## 基础配置

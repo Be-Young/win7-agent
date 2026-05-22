@@ -238,7 +238,7 @@ async function sendPanelMessage(context, panel, text) {
     return;
   }
   const settings = getSettings();
-  const memory = await loadMemory(context);
+  let memory = await loadMemory(context);
   const skills = loadSkills(context, settings);
   const prepared = await prepareMemoryForMessage(context, memory, settings, skills, userText);
   const messages = core.buildChatMessages(settings, prepared.memory, skills, userText, prepared.explicitSkills);
@@ -254,7 +254,28 @@ async function sendPanelMessage(context, panel, text) {
   await saveMemory(context, core.trimMemory(memory, settings.memory.maxMessages, settings.memory.maxContextItems));
   await postPanelState(context, panel);
 
-  await handleAssistantActions(context, panel, answer, { autoApplyFileChanges: false });
+  const results = await handleAssistantActions(context, panel, answer, {
+    autoApplyFileChanges: false,
+    collectResults: true
+  });
+  if (results.length > 0) {
+    const toolText = 'Tool results:\n' + results.join('\n\n');
+    panel.webview.postMessage({ type: 'append', role: 'system', text: toolText });
+    memory = await loadMemory(context);
+    memory.messages.push({ role: 'user', content: toolText + '\n\nContinue from these tool results and answer the original request.' });
+    await saveMemory(context, core.trimMemory(memory, settings.memory.maxMessages, settings.memory.maxContextItems));
+
+    const followupMemory = await loadMemory(context);
+    const followupMessages = core.buildChatMessages(settings, followupMemory, skills, 'Continue from the tool results.', prepared.explicitSkills);
+    panel.webview.postMessage({ type: 'assistantStart' });
+    const followup = await chatCompletion(settings, followupMessages, (delta) => {
+      panel.webview.postMessage({ type: 'assistantDelta', text: delta });
+    });
+    panel.webview.postMessage({ type: 'assistantDone', text: followup });
+    followupMemory.messages.push({ role: 'assistant', content: followup });
+    await saveMemory(context, core.trimMemory(followupMemory, settings.memory.maxMessages, settings.memory.maxContextItems));
+    await postPanelState(context, panel);
+  }
 }
 
 async function sendWorkMessage(context, panel, text) {
@@ -431,7 +452,9 @@ async function handleAssistantActions(context, panel, answer, options) {
       : await vscode.window.showInformationMessage('模型请求执行命令：' + commandText, { modal: true }, '运行', '取消');
     if (ok === '运行') {
       const commandResult = await runLocalCommand(context, commandText, true);
-      results.push('Command executed: ' + commandText + '\n' + limit(commandResult.stdout || commandResult.stderr || '', 4000));
+      const formatted = core.formatCommandResult(commandText, commandResult, 12000);
+      panel.webview.postMessage({ type: 'notice', text: formatted });
+      results.push(formatted);
     }
   }
   return opts.collectResults ? results : [];
@@ -619,11 +642,12 @@ async function runLocalCommand(context, command, fromModel) {
     output.appendLine(result.stderr);
   }
   await auditCommand(context, command, result.error);
-  if (result.error) {
-    throw result.error;
-  }
   if (!fromModel) {
-    vscode.window.showInformationMessage('命令已执行，输出见 Win7 Agent 面板。');
+    if (result.error) {
+      vscode.window.showWarningMessage('命令已执行但返回非零状态，输出见 Win7 Agent 面板。');
+    } else {
+      vscode.window.showInformationMessage('命令已执行，输出见 Win7 Agent 面板。');
+    }
   }
   return result;
 }
@@ -1047,7 +1071,7 @@ async function readLocalFile(context, filePath, settings) {
 function readUrl(rawUrl, settings) {
   return new Promise((resolve, reject) => {
     const endpoint = new URL(rawUrl);
-    const headers = Object.assign({ 'User-Agent': 'win7-agent-vscode/0.4.1' }, settings.headers || {});
+    const headers = Object.assign({ 'User-Agent': 'win7-agent-vscode/0.4.2' }, settings.headers || {});
     applyAuthProfiles(rawUrl, settings.authProfiles || {}, headers);
     const client = endpoint.protocol === 'https:' ? https : http;
     const req = client.request(endpoint, tlsOptions(settings, {
@@ -1432,7 +1456,12 @@ function convertModels(models) {
 function execShell(command, cwd, maxOutputBytes) {
   return new Promise((resolve) => {
     childProcess.exec(command, { cwd: cwd, windowsHide: true, maxBuffer: maxOutputBytes || 65536 }, (error, stdout, stderr) => {
-      resolve({ error: error, stdout: limit(stdout || '', maxOutputBytes || 65536), stderr: limit(stderr || '', maxOutputBytes || 65536) });
+      resolve({
+        error: error,
+        exitCode: error && typeof error.code === 'number' ? error.code : 0,
+        stdout: limit(stdout || '', maxOutputBytes || 65536),
+        stderr: limit(stderr || '', maxOutputBytes || 65536)
+      });
     });
   });
 }

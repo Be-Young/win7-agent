@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.2
+
+- Feed `agent-action` command stdout, stderr, exit code, and errors back into the chat workflow.
+- Continue the normal chat automatically after command execution so tool results are visible to the model.
+- Preserve command output even when a command exits with a non-zero status.
+
 ## 0.4.1
 
 - Clarified command execution prompting so models request local commands with `agent-action` instead of refusing with environment-limit messages.

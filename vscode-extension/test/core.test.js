@@ -252,3 +252,18 @@ test('cleanSessionTitle keeps titles short and non-empty', () => {
   assert.equal(core.cleanSessionTitle(''), 'New Session');
   assert.equal(core.cleanSessionTitle('a'.repeat(90)).length, 60);
 });
+
+test('formatCommandResult preserves stdout stderr and exit code for model feedback', () => {
+  const text = core.formatCommandResult('dir', {
+    stdout: 'file-a.txt\n',
+    stderr: 'warning\n',
+    exitCode: 1,
+    error: { message: 'exit status 1' }
+  }, 2000);
+
+  assert.match(text, /Command: dir/);
+  assert.match(text, /Exit code: 1/);
+  assert.match(text, /file-a\.txt/);
+  assert.match(text, /warning/);
+  assert.match(text, /exit status 1/);
+});

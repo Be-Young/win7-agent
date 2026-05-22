@@ -52,7 +52,7 @@ node scripts/package-vscode-extension.js
 The output is:
 
 ```text
-dist/win7-agent-vscode-0.4.1.vsix
+dist/win7-agent-vscode-0.4.2.vsix
 ```
 
 The VSIX includes:

@@ -37,7 +37,7 @@ agent.exe chat
 
 Windows 7 只能使用 VS Code 1.70.x，建议固定安装 VS Code 1.70.3。
 
-1. 获取 `win7-agent-vscode-0.4.1.vsix`。
+1. 获取 `win7-agent-vscode-0.4.2.vsix`。
 2. 打开 VS Code。
 3. 进入扩展面板，点击右上角 `...`。
 4. 选择 `Install from VSIX...`，选中 `.vsix` 文件。
@@ -46,7 +46,7 @@ Windows 7 只能使用 VS Code 1.70.x，建议固定安装 VS Code 1.70.3。
 也可以使用命令行：
 
 ```bat
-code --install-extension win7-agent-vscode-0.4.1.vsix
+code --install-extension win7-agent-vscode-0.4.2.vsix
 ```
 
 在 VS Code 设置 JSON 中填写：

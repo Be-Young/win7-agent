@@ -399,6 +399,24 @@ function cleanSessionTitle(title) {
   return value.length > 60 ? value.slice(0, 60) : value;
 }
 
+function formatCommandResult(command, result, maxChars) {
+  const source = result || {};
+  const lines = [
+    'Command: ' + String(command || ''),
+    'Exit code: ' + (typeof source.exitCode === 'number' ? source.exitCode : 0)
+  ];
+  if (source.error && source.error.message) {
+    lines.push('Error: ' + source.error.message);
+  }
+  lines.push('', 'STDOUT:', String(source.stdout || '').trim() || '[empty]');
+  lines.push('', 'STDERR:', String(source.stderr || '').trim() || '[empty]');
+  const text = lines.join('\n');
+  if (maxChars > 0 && text.length > maxChars) {
+    return text.slice(0, maxChars) + '\n[command result truncated]';
+  }
+  return text;
+}
+
 function ensureSessionIndex(index, fallbackId, fallbackTitle, now) {
   const source = index && typeof index === 'object' ? index : {};
   const sessions = Array.isArray(source.sessions) ? source.sessions.slice() : [];
@@ -727,6 +745,7 @@ module.exports = {
   setActiveSession,
   renameSession,
   deleteSession,
+  formatCommandResult,
   extractHtml,
   trimMemory,
   contextToParts,
