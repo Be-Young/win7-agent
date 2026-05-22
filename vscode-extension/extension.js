@@ -1047,7 +1047,7 @@ async function readLocalFile(context, filePath, settings) {
 function readUrl(rawUrl, settings) {
   return new Promise((resolve, reject) => {
     const endpoint = new URL(rawUrl);
-    const headers = Object.assign({ 'User-Agent': 'win7-agent-vscode/0.4.0' }, settings.headers || {});
+    const headers = Object.assign({ 'User-Agent': 'win7-agent-vscode/0.4.1' }, settings.headers || {});
     applyAuthProfiles(rawUrl, settings.authProfiles || {}, headers);
     const client = endpoint.protocol === 'https:' ? https : http;
     const req = client.request(endpoint, tlsOptions(settings, {

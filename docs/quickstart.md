@@ -58,7 +58,7 @@ Commands in `blocked_prefixes` are refused.
 
 Use this when the Win7 office machine runs VS Code 1.70.x:
 
-1. Install `win7-agent-vscode-0.4.0.vsix` with `Extensions -> ... -> Install from VSIX...`.
+1. Install `win7-agent-vscode-0.4.1.vsix` with `Extensions -> ... -> Install from VSIX...`.
 2. Open VS Code Settings JSON.
 3. Configure:
 

@@ -132,6 +132,14 @@ test('buildDraftPrompt creates office-ready prompts for common document types', 
   assert.match(prompt, /简洁正式/);
 });
 
+test('buildSystemPrompt tells the model how to request local command execution', () => {
+  const prompt = core.buildSystemPrompt('', []);
+
+  assert.match(prompt, /agent-action/);
+  assert.match(prompt, /run_command/);
+  assert.match(prompt, /Ordinary local commands are allowed/);
+});
+
 test('parseReferences finds file and skill references in chat text', () => {
   const refs = core.parseReferences('请参考 @file:src/app.js 和 [[docs/readme.md]]，用 @skill:report #skill:meeting 处理。');
 

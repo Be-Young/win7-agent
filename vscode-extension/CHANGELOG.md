@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.1
+
+- Clarified command execution prompting so models request local commands with `agent-action` instead of refusing with environment-limit messages.
+
 ## 0.4.0
 
 - Added workspace/project context loading.

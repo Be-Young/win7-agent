@@ -654,6 +654,7 @@ function buildSystemPrompt(skillPrompt, contextParts) {
     'You may inspect workspace context and propose project file edits.',
     'For file edits, return a fenced block exactly like: ```agent-files\n{"summary":"short summary","changes":[{"action":"write","path":"relative/path.txt","content":"new content"},{"action":"replace","path":"relative/path.txt","find":"old","replace":"new"}]}\n```.',
     'Allowed file actions are create, write, replace, and delete. Use only relative workspace paths.',
+    'If the user asks you to run a local command, or you need a local command to continue, do not say the environment forbids it. Request execution with a fenced block exactly like: ```agent-action\n{"action":"run_command","command":"dir"}\n```.',
     'Ordinary local commands are allowed; high-risk command prefixes require user confirmation.',
     'Do not ask to bypass corporate security controls.'
   ];

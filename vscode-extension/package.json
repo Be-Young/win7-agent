@@ -2,7 +2,7 @@
   "name": "win7-agent",
   "displayName": "Win7 Agent",
   "description": "Offline-friendly OpenAI-compatible intranet agent for Windows 7 VS Code 1.70.x.",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "publisher": "win7-agent",
   "license": "UNLICENSED",
   "engines": {
