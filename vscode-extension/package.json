@@ -2,7 +2,7 @@
   "name": "win7-agent",
   "displayName": "Win7 Agent",
   "description": "Offline-friendly OpenAI-compatible intranet agent for Windows 7 VS Code 1.70.x.",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "publisher": "win7-agent",
   "license": "UNLICENSED",
   "engines": {
@@ -391,11 +391,6 @@
           "type": "boolean",
           "default": true,
           "description": "Automatically include workspace project context when using continuous work mode."
-        },
-        "win7Agent.work.maxTurns": {
-          "type": "number",
-          "default": 8,
-          "description": "Maximum model/tool turns in continuous work mode."
         },
         "win7Agent.work.autoApplyFileChanges": {
           "type": "boolean",

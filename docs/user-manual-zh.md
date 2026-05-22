@@ -37,7 +37,7 @@ agent.exe chat
 
 Windows 7 只能使用 VS Code 1.70.x，建议固定安装 VS Code 1.70.3。
 
-1. 获取 `win7-agent-vscode-0.4.2.vsix`。
+1. 获取 `win7-agent-vscode-0.4.3.vsix`。
 2. 打开 VS Code。
 3. 进入扩展面板，点击右上角 `...`。
 4. 选择 `Install from VSIX...`，选中 `.vsix` 文件。
@@ -46,7 +46,7 @@ Windows 7 只能使用 VS Code 1.70.x，建议固定安装 VS Code 1.70.3。
 也可以使用命令行：
 
 ```bat
-code --install-extension win7-agent-vscode-0.4.2.vsix
+code --install-extension win7-agent-vscode-0.4.3.vsix
 ```
 
 在 VS Code 设置 JSON 中填写：
@@ -76,7 +76,6 @@ VS Code 插件版支持聊天、模型切换、skills、记忆、当前项目读
 | `Project` | 读取当前 VS Code 打开的项目，把项目下的文本文件加入上下文 |
 | `Ref File` | 选择并引用某个项目文件，会在输入框插入 `@file:路径` |
 | `Skill` | 选择并引用某个 skill，会在输入框插入 `@skill:名称` |
-| `Work` | 开启连续工作模式，再发送任务 |
 | `New` | 新建会话，当前会话自动保存在历史会话中 |
 | `Sessions` | 切换历史会话 |
 | `Rename` | 修改当前会话标题 |
@@ -92,11 +91,13 @@ VS Code 插件版支持聊天、模型切换、skills、记忆、当前项目读
 
 连续工作模式：
 
-1. 在聊天窗口点击 `Work`，按钮变为 `Work On`。
-2. 输入任务，例如“阅读当前项目并修复配置加载问题”。
+1. 直接输入任务，例如“阅读当前项目并修复配置加载问题”。
+2. 插件默认以连续工作模式运行，没有固定步骤上限。
 3. 插件会自动把项目上下文交给模型，并在模型给出文件修改计划时应用修改。
 4. 每次应用修改都会保存回退点。
-5. 需要停止时，在聊天输入框内连续按两次 `Esc`。
+5. 需要停止时，在聊天输入框内连续按两次 `Esc`，会立即中断当前模型请求或正在运行的命令。
+
+聊天消息会把正式回答和辅助内容分开。正式回答默认展开，`Think`、`Agent Action`、`Agent Files` 等内容默认折叠，点击标题可以展开查看。
 
 文件修改格式由模型自动输出，形式如下：
 

@@ -58,7 +58,7 @@ Commands in `blocked_prefixes` are refused.
 
 Use this when the Win7 office machine runs VS Code 1.70.x:
 
-1. Install `win7-agent-vscode-0.4.2.vsix` with `Extensions -> ... -> Install from VSIX...`.
+1. Install `win7-agent-vscode-0.4.3.vsix` with `Extensions -> ... -> Install from VSIX...`.
 2. Open VS Code Settings JSON.
 3. Configure:
 
@@ -81,6 +81,6 @@ Useful VS Code chat references:
 @skill:report          引用某个 skill
 ```
 
-In chat, click `Project` to load the current workspace into context. Click `Work` before sending to let the agent work continuously; press `Esc` twice to stop after the current step. File edits made by the agent save rollback snapshots, and `Win7 Agent: Rollback Last File Change` restores the previous state.
+In chat, click `Project` to load the current workspace into context. Sending any task now starts continuous work by default, without a fixed turn limit. Press `Esc` twice to abort the current model request or command immediately. File edits made by the agent save rollback snapshots, and `Win7 Agent: Rollback Last File Change` restores the previous state.
 
 Sessions are isolated. Use `New`, `Sessions`, `Rename`, and `Delete` in the chat toolbar, or the matching command palette commands, to manage historical conversations.

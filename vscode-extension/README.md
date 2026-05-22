@@ -12,7 +12,9 @@ Microsoft lists VS Code 1.70.3 as the last release for Windows 7. This extension
 - Workspace/project context loading with text-file filtering.
 - File and skill references such as `@file:src/app.js` and `@skill:report`.
 - Isolated sessions with new, switch, rename, and delete.
-- Continuous work mode; press Escape twice to stop after the current step.
+- Continuous work mode is enabled by default, with no fixed turn limit.
+- Press Escape twice to abort the current model request or command immediately.
+- Assistant answers show the final response separately from folded think, `agent-action`, and `agent-files` sections.
 - Project file create/write/replace/delete through model-proposed `agent-files` blocks.
 - Rollback snapshots for file edits applied by the extension.
 - OpenAI-compatible `/v1/chat/completions`, including optional SSE streaming.
@@ -27,7 +29,7 @@ Microsoft lists VS Code 1.70.3 as the last release for Windows 7. This extension
 ## Offline Install
 
 1. Install VS Code 1.70.3 x64 on Windows 7.
-2. Copy `win7-agent-vscode-0.4.2.vsix` into the intranet.
+2. Copy `win7-agent-vscode-0.4.3.vsix` into the intranet.
 3. In VS Code, open Extensions, choose `...`, then `Install from VSIX...`.
 4. Open Settings JSON and configure at least:
 
@@ -47,8 +49,8 @@ In chat:
 - Click `New`, `Sessions`, `Rename`, or `Delete` to manage isolated chat sessions.
 - Use `@file:src/app.js` to reference a file.
 - Use `@skill:report` to reference a skill.
-- Click `Work` before sending to run continuous project work.
-- Press `Esc` twice to stop continuous work after the current step.
+- Send any task to run continuous project work by default.
+- Press `Esc` twice to abort the current work immediately.
 - Use `Win7 Agent: Rollback Last File Change` to undo the last extension-applied file edit.
 
 ## Model Profiles

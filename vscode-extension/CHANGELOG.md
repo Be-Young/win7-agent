@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.3
+
+- Enabled continuous work by default for every chat send and removed the chat `Work` toggle.
+- Removed the default continuous work turn cap; the loop continues while tool results require another step.
+- Split assistant UI into the final answer plus collapsed `Think`, `Agent Action`, and `Agent Files` sections.
+- Double-Escape now aborts the current model request or command instead of waiting for the current step to finish.
+
 ## 0.4.2
 
 - Feed `agent-action` command stdout, stderr, exit code, and errors back into the chat workflow.

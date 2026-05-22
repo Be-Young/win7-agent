@@ -267,3 +267,52 @@ test('formatCommandResult preserves stdout stderr and exit code for model feedba
   assert.match(text, /warning/);
   assert.match(text, /exit status 1/);
 });
+
+test('splitAssistantContent separates final answer from folded think and tool blocks', () => {
+  const parts = core.splitAssistantContent(`开头说明
+<think>
+内部推理
+</think>
+正式结论第一段。
+\`\`\`agent-action
+{"action":"run_command","command":"dir"}
+\`\`\`
+继续说明。
+\`\`\`agent-files
+{"summary":"write","changes":[{"action":"write","path":"a.txt","content":"a"}]}
+\`\`\`
+`);
+
+  assert.deepEqual(parts.map((part) => part.kind), ['answer', 'think', 'agent-action', 'agent-files']);
+  assert.match(parts[0].content, /正式结论第一段/);
+  assert.match(parts[0].content, /继续说明/);
+  assert.doesNotMatch(parts[0].content, /内部推理/);
+  assert.equal(parts[1].collapsed, true);
+  assert.equal(parts[2].collapsed, true);
+  assert.equal(parts[3].collapsed, true);
+});
+
+test('work settings default to always-on continuous work with unlimited turns', () => {
+  const work = core.resolveWorkSettings({});
+
+  assert.equal(work.maxTurns, 0);
+  assert.equal(work.autoApplyFileChanges, true);
+  assert.equal(core.shouldContinueWork(500, ['tool result'], { maxTurns: work.maxTurns, stopRequested: false }), true);
+  assert.equal(core.shouldContinueWork(1, [], { maxTurns: work.maxTurns, stopRequested: false }), false);
+  assert.equal(core.shouldContinueWork(1, ['tool result'], { maxTurns: work.maxTurns, stopRequested: true }), false);
+});
+
+test('abort handle notifies listeners immediately and only once', () => {
+  const abort = core.createAbortHandle();
+  const reasons = [];
+
+  abort.onAbort((reason) => reasons.push(reason));
+  abort.abort('double escape');
+  abort.abort('second abort');
+  abort.onAbort((reason) => reasons.push('late:' + reason));
+
+  assert.equal(abort.aborted, true);
+  assert.equal(abort.reason, 'double escape');
+  assert.deepEqual(reasons, ['double escape', 'late:double escape']);
+  assert.equal(core.isAbortError(core.abortError('double escape')), true);
+});

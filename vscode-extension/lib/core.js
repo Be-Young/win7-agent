@@ -380,6 +380,166 @@ function buildRollbackSnapshot(id, changes, originals) {
   };
 }
 
+function splitAssistantContent(text) {
+  const raw = String(text || '');
+  const ranges = collectAssistantMetaRanges(raw).sort((a, b) => a.start - b.start || a.end - b.end);
+  const selected = [];
+  let answer = '';
+  let cursor = 0;
+  ranges.forEach((range) => {
+    if (range.start < cursor) {
+      return;
+    }
+    answer += raw.slice(cursor, range.start);
+    selected.push(range);
+    cursor = range.end;
+  });
+  answer += raw.slice(cursor);
+
+  const parts = [];
+  const answerContent = cleanAssistantPart(answer);
+  if (answerContent) {
+    parts.push({
+      kind: 'answer',
+      label: '正式回答',
+      content: answerContent,
+      collapsed: false
+    });
+  }
+  selected.forEach((range) => {
+    const content = cleanAssistantPart(range.content);
+    if (!content) {
+      return;
+    }
+    parts.push({
+      kind: range.kind,
+      label: range.label,
+      content: content,
+      collapsed: true
+    });
+  });
+  return parts;
+}
+
+function collectAssistantMetaRanges(text) {
+  const ranges = [];
+  collectTagRanges(text, /<think\b[^>]*>([\s\S]*?)<\/think>/gi, 'think', 'Think', ranges);
+  collectTagRanges(text, /<thinking\b[^>]*>([\s\S]*?)<\/thinking>/gi, 'think', 'Think', ranges);
+
+  const fenceRe = /```([a-zA-Z0-9_-]+)[^\r\n]*\r?\n([\s\S]*?)```/g;
+  let match;
+  while ((match = fenceRe.exec(text)) !== null) {
+    const lang = String(match[1] || '').toLowerCase();
+    const meta = assistantFenceMeta(lang);
+    if (!meta) {
+      continue;
+    }
+    ranges.push({
+      start: match.index,
+      end: match.index + match[0].length,
+      kind: meta.kind,
+      label: meta.label,
+      content: match[2] || ''
+    });
+  }
+  return ranges;
+}
+
+function collectTagRanges(text, regex, kind, label, ranges) {
+  let match;
+  while ((match = regex.exec(text)) !== null) {
+    ranges.push({
+      start: match.index,
+      end: match.index + match[0].length,
+      kind: kind,
+      label: label,
+      content: match[1] || ''
+    });
+  }
+}
+
+function assistantFenceMeta(lang) {
+  if (lang === 'agent-action') {
+    return { kind: 'agent-action', label: 'Agent Action' };
+  }
+  if (lang === 'agent-files') {
+    return { kind: 'agent-files', label: 'Agent Files' };
+  }
+  if (lang === 'think' || lang === 'thinking' || lang === 'thought') {
+    return { kind: 'think', label: 'Think' };
+  }
+  return null;
+}
+
+function cleanAssistantPart(text) {
+  return String(text || '')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function resolveWorkSettings(work) {
+  const cfg = work || {};
+  return {
+    maxTurns: 0,
+    autoApplyFileChanges: cfg.autoApplyFileChanges !== false
+  };
+}
+
+function shouldContinueWork(turn, results, policy) {
+  const opts = policy || {};
+  if (opts.stopRequested === true) {
+    return false;
+  }
+  if (!Array.isArray(results) || results.length === 0) {
+    return false;
+  }
+  const maxTurns = Number(opts.maxTurns || 0);
+  if (!maxTurns || maxTurns <= 0) {
+    return true;
+  }
+  return turn < maxTurns;
+}
+
+function createAbortHandle() {
+  let callbacks = [];
+  const handle = {
+    aborted: false,
+    reason: '',
+    onAbort: function (callback) {
+      if (typeof callback !== 'function') {
+        return;
+      }
+      if (handle.aborted) {
+        callback(handle.reason);
+        return;
+      }
+      callbacks.push(callback);
+    },
+    abort: function (reason) {
+      if (handle.aborted) {
+        return;
+      }
+      handle.aborted = true;
+      handle.reason = reason || 'aborted';
+      const pending = callbacks.slice();
+      callbacks = [];
+      pending.forEach((callback) => callback(handle.reason));
+    }
+  };
+  return handle;
+}
+
+function abortError(reason) {
+  const err = new Error(reason || 'aborted');
+  err.code = 'WIN7_AGENT_ABORTED';
+  return err;
+}
+
+function isAbortError(err) {
+  return err && err.code === 'WIN7_AGENT_ABORTED';
+}
+
 function recordEscPress(state, nowMs) {
   const current = state || {};
   const now = typeof nowMs === 'number' ? nowMs : Date.now();
@@ -738,6 +898,12 @@ module.exports = {
   extractFileChangePlan,
   applyTextChange,
   buildRollbackSnapshot,
+  splitAssistantContent,
+  resolveWorkSettings,
+  shouldContinueWork,
+  createAbortHandle,
+  abortError,
+  isAbortError,
   recordEscPress,
   cleanSessionTitle,
   ensureSessionIndex,

@@ -21,7 +21,7 @@ node scripts/package-vscode-extension.js
 This creates:
 
 ```text
-dist/win7-agent-vscode-0.4.2.vsix
+dist/win7-agent-vscode-0.4.3.vsix
 ```
 
 The VSIX contains:

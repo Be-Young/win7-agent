@@ -91,14 +91,13 @@ function getSettings() {
       excludeDirs: cfg.get('workspace.excludeDirs') || undefined,
       textExtensions: cfg.get('workspace.textExtensions') || undefined,
       includeInWorkMode: cfg.get('workspace.includeInWorkMode') !== false
-    },
-    work: {
-      maxTurns: cfg.get('work.maxTurns') || 8,
-      autoApplyFileChanges: cfg.get('work.autoApplyFileChanges') !== false
     }
   };
   const resolved = core.resolveModel(settings);
   return Object.assign(settings, resolved, {
+    work: core.resolveWorkSettings({
+      autoApplyFileChanges: cfg.get('work.autoApplyFileChanges') !== false
+    }),
     maxMemoryMessages: settings.memory.maxMessages,
     maxContextItems: settings.memory.maxContextItems
   });
@@ -116,7 +115,7 @@ async function openChat(context) {
     { enableScripts: true, retainContextWhenHidden: true }
   );
   panel.webview.html = chatHtml(panel.webview);
-  panelStates.set(panel, { working: false, stopRequested: false, esc: {} });
+  panelStates.set(panel, { working: false, stopRequested: false, esc: {}, currentAbort: null });
   panel.webview.onDidReceiveMessage((message) => {
     handlePanelMessage(context, panel, message).catch((err) => {
       const msg = err && err.message ? err.message : String(err);
@@ -136,11 +135,7 @@ async function handlePanelMessage(context, panel, message) {
     return;
   }
   if (message.type === 'send') {
-    if (message.work) {
-      await sendWorkMessage(context, panel, message.text || '');
-    } else {
-      await sendPanelMessage(context, panel, message.text || '');
-    }
+    await sendWorkMessage(context, panel, message.text || '');
     return;
   }
   if (message.type === 'file') {
@@ -194,7 +189,8 @@ async function handlePanelMessage(context, panel, message) {
     state.esc = core.recordEscPress(state.esc, Date.now());
     if (state.esc.stop && state.working) {
       state.stopRequested = true;
-      panel.webview.postMessage({ type: 'notice', text: 'Stop requested. Continuous work will stop after the current step.' });
+      abortPanelWork(panel, 'Stopped by double Escape.');
+      panel.webview.postMessage({ type: 'notice', text: 'Stop requested. Current work is being aborted.' });
     }
     return;
   }
@@ -247,7 +243,7 @@ async function sendPanelMessage(context, panel, text) {
   const answer = await chatCompletion(settings, messages, (delta) => {
     panel.webview.postMessage({ type: 'assistantDelta', text: delta });
   });
-  panel.webview.postMessage({ type: 'assistantDone', text: answer });
+  panel.webview.postMessage({ type: 'assistantDone', text: answer, parts: core.splitAssistantContent(answer) });
 
   memory.messages.push({ role: 'user', content: userText });
   memory.messages.push({ role: 'assistant', content: answer });
@@ -271,7 +267,7 @@ async function sendPanelMessage(context, panel, text) {
     const followup = await chatCompletion(settings, followupMessages, (delta) => {
       panel.webview.postMessage({ type: 'assistantDelta', text: delta });
     });
-    panel.webview.postMessage({ type: 'assistantDone', text: followup });
+    panel.webview.postMessage({ type: 'assistantDone', text: followup, parts: core.splitAssistantContent(followup) });
     followupMemory.messages.push({ role: 'assistant', content: followup });
     await saveMemory(context, core.trimMemory(followupMemory, settings.memory.maxMessages, settings.memory.maxContextItems));
     await postPanelState(context, panel);
@@ -313,32 +309,46 @@ async function sendWorkMessage(context, panel, text) {
   let messages = core.buildChatMessages(settings, prepared.memory, skills, workPrompt, prepared.explicitSkills);
   panel.webview.postMessage({ type: 'append', role: 'user', text: userText + '\n\n[continuous work mode]' });
   try {
-    for (let turn = 1; turn <= settings.work.maxTurns; turn += 1) {
+    for (let turn = 1; ; turn += 1) {
       if (state.stopRequested) {
         panel.webview.postMessage({ type: 'notice', text: 'Continuous work stopped.' });
         break;
       }
-      panel.webview.postMessage({ type: 'notice', text: 'Work step ' + turn + ' / ' + settings.work.maxTurns });
+      panel.webview.postMessage({ type: 'notice', text: 'Work step ' + turn });
       panel.webview.postMessage({ type: 'assistantStart' });
-      const answer = await chatCompletion(settings, messages, (delta) => {
+      const answer = await abortableChatCompletion(panel, settings, messages, (delta) => {
         panel.webview.postMessage({ type: 'assistantDelta', text: delta });
       });
-      panel.webview.postMessage({ type: 'assistantDone', text: answer });
+      panel.webview.postMessage({ type: 'assistantDone', text: answer, parts: core.splitAssistantContent(answer) });
       memory.messages.push({ role: 'user', content: turn === 1 ? userText : '[continuous work step ' + turn + ']' });
       memory.messages.push({ role: 'assistant', content: answer });
       await saveMemory(context, core.trimMemory(memory, settings.memory.maxMessages, settings.memory.maxContextItems));
 
+      if (state.stopRequested) {
+        panel.webview.postMessage({ type: 'notice', text: 'Continuous work stopped.' });
+        break;
+      }
       const results = await handleAssistantActions(context, panel, answer, {
         autoApplyFileChanges: settings.work.autoApplyFileChanges,
         collectResults: true
       });
-      if (results.length === 0) {
+      if (!core.shouldContinueWork(turn, results, {
+        maxTurns: settings.work.maxTurns,
+        stopRequested: state.stopRequested
+      })) {
         break;
       }
       messages = messages.concat([
         { role: 'assistant', content: answer },
         { role: 'user', content: 'Tool results:\n' + results.join('\n\n') + '\n\nContinue working. If the task is complete, provide a concise final summary without tool blocks.' }
       ]);
+    }
+  } catch (err) {
+    if (core.isAbortError(err)) {
+      panel.webview.postMessage({ type: 'assistantAbort' });
+      panel.webview.postMessage({ type: 'notice', text: 'Continuous work aborted.' });
+    } else {
+      throw err;
     }
   } finally {
     state.working = false;
@@ -400,10 +410,44 @@ async function panelReferenceSkill(context, panel) {
 function getPanelState(panel) {
   let state = panelStates.get(panel);
   if (!state) {
-    state = { working: false, stopRequested: false, esc: {} };
+    state = { working: false, stopRequested: false, esc: {}, currentAbort: null };
     panelStates.set(panel, state);
   }
   return state;
+}
+
+function abortPanelWork(panel, reason) {
+  const state = getPanelState(panel);
+  state.stopRequested = true;
+  if (state.currentAbort) {
+    state.currentAbort.abort(reason || 'Stopped by user.');
+  }
+}
+
+async function abortableChatCompletion(panel, settings, messages, onDelta) {
+  const state = getPanelState(panel);
+  const abort = core.createAbortHandle();
+  state.currentAbort = abort;
+  try {
+    return await chatCompletion(settings, messages, onDelta, abort);
+  } finally {
+    if (state.currentAbort === abort) {
+      state.currentAbort = null;
+    }
+  }
+}
+
+async function abortableRunLocalCommand(context, panel, command, fromModel) {
+  const state = getPanelState(panel);
+  const abort = core.createAbortHandle();
+  state.currentAbort = abort;
+  try {
+    return await runLocalCommand(context, command, fromModel, abort);
+  } finally {
+    if (state.currentAbort === abort) {
+      state.currentAbort = null;
+    }
+  }
 }
 
 async function prepareMemoryForMessage(context, memory, settings, skills, userText) {
@@ -451,7 +495,7 @@ async function handleAssistantActions(context, panel, answer, options) {
       ? '运行'
       : await vscode.window.showInformationMessage('模型请求执行命令：' + commandText, { modal: true }, '运行', '取消');
     if (ok === '运行') {
-      const commandResult = await runLocalCommand(context, commandText, true);
+      const commandResult = await abortableRunLocalCommand(context, panel, commandText, true);
       const formatted = core.formatCommandResult(commandText, commandResult, 12000);
       panel.webview.postMessage({ type: 'notice', text: formatted });
       results.push(formatted);
@@ -618,7 +662,7 @@ async function runCommandFromInput(context) {
   await runLocalCommand(context, command, false);
 }
 
-async function runLocalCommand(context, command, fromModel) {
+async function runLocalCommand(context, command, fromModel, abortHandle) {
   const settings = getSettings();
   const validation = core.validateCommand(command, settings.command);
   if (!validation.ok) {
@@ -634,7 +678,11 @@ async function runLocalCommand(context, command, fromModel) {
   output.show(true);
   output.appendLine('');
   output.appendLine('$ ' + command);
-  const result = await execShell(command, cwd, settings.command.maxOutputBytes);
+  const result = await execShell(command, cwd, settings.command.maxOutputBytes, abortHandle);
+  if (core.isAbortError(result.error)) {
+    await auditCommand(context, command, result.error);
+    throw result.error;
+  }
   if (result.stdout) {
     output.appendLine(result.stdout);
   }
@@ -1071,7 +1119,7 @@ async function readLocalFile(context, filePath, settings) {
 function readUrl(rawUrl, settings) {
   return new Promise((resolve, reject) => {
     const endpoint = new URL(rawUrl);
-    const headers = Object.assign({ 'User-Agent': 'win7-agent-vscode/0.4.2' }, settings.headers || {});
+    const headers = Object.assign({ 'User-Agent': 'win7-agent-vscode/0.4.3' }, settings.headers || {});
     applyAuthProfiles(rawUrl, settings.authProfiles || {}, headers);
     const client = endpoint.protocol === 'https:' ? https : http;
     const req = client.request(endpoint, tlsOptions(settings, {
@@ -1143,8 +1191,12 @@ function pageToMarkdown(page) {
   return lines.join('\n');
 }
 
-function chatCompletion(settings, messages, onDelta) {
+function chatCompletion(settings, messages, onDelta, abortHandle) {
   return new Promise((resolve, reject) => {
+    if (abortHandle && abortHandle.aborted) {
+      reject(core.abortError(abortHandle.reason));
+      return;
+    }
     const url = normalizeChatUrl(settings.baseUrl);
     const endpoint = new URL(url);
     const body = JSON.stringify({
@@ -1160,6 +1212,21 @@ function chatCompletion(settings, messages, onDelta) {
       headers.Authorization = 'Bearer ' + settings.apiKey;
     }
     const client = endpoint.protocol === 'https:' ? https : http;
+    let settled = false;
+    function done(value) {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      resolve(value);
+    }
+    function fail(err) {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      reject(err);
+    }
     const req = client.request(endpoint, tlsOptions(settings, {
       method: 'POST',
       headers: headers,
@@ -1169,6 +1236,9 @@ function chatCompletion(settings, messages, onDelta) {
       let answer = '';
       let sseBuffer = '';
       res.on('data', (chunk) => {
+        if (abortHandle && abortHandle.aborted) {
+          return;
+        }
         if (settings.stream) {
           sseBuffer += chunk.toString('utf8');
           const lines = sseBuffer.split(/\r?\n/);
@@ -1190,28 +1260,37 @@ function chatCompletion(settings, messages, onDelta) {
         }
       });
       res.on('end', () => {
+        if (abortHandle && abortHandle.aborted) {
+          fail(core.abortError(abortHandle.reason));
+          return;
+        }
         if (res.statusCode < 200 || res.statusCode >= 300) {
           const text = settings.stream ? answer : Buffer.concat(chunks).toString('utf8');
-          reject(new Error('api status ' + res.statusCode + ': ' + text));
+          fail(new Error('api status ' + res.statusCode + ': ' + text));
           return;
         }
         if (settings.stream) {
-          resolve(answer);
+          done(answer);
           return;
         }
         try {
           const data = JSON.parse(Buffer.concat(chunks).toString('utf8'));
           const content = data && data.choices && data.choices[0] && data.choices[0].message ? data.choices[0].message.content : '';
-          resolve(content || '');
+          done(content || '');
         } catch (err) {
-          reject(err);
+          fail(err);
         }
       });
     });
+    if (abortHandle) {
+      abortHandle.onAbort((reason) => {
+        req.destroy(core.abortError(reason));
+      });
+    }
     req.on('timeout', () => {
       req.destroy(new Error('request timed out'));
     });
-    req.on('error', reject);
+    req.on('error', fail);
     req.write(body);
     req.end();
   });
@@ -1453,16 +1532,31 @@ function convertModels(models) {
   return out;
 }
 
-function execShell(command, cwd, maxOutputBytes) {
+function execShell(command, cwd, maxOutputBytes, abortHandle) {
   return new Promise((resolve) => {
-    childProcess.exec(command, { cwd: cwd, windowsHide: true, maxBuffer: maxOutputBytes || 65536 }, (error, stdout, stderr) => {
+    if (abortHandle && abortHandle.aborted) {
       resolve({
-        error: error,
-        exitCode: error && typeof error.code === 'number' ? error.code : 0,
+        error: core.abortError(abortHandle.reason),
+        exitCode: -1,
+        stdout: '',
+        stderr: ''
+      });
+      return;
+    }
+    const child = childProcess.exec(command, { cwd: cwd, windowsHide: true, maxBuffer: maxOutputBytes || 65536 }, (error, stdout, stderr) => {
+      const aborted = abortHandle && abortHandle.aborted;
+      resolve({
+        error: aborted ? core.abortError(abortHandle.reason) : error,
+        exitCode: aborted ? -1 : (error && typeof error.code === 'number' ? error.code : 0),
         stdout: limit(stdout || '', maxOutputBytes || 65536),
         stderr: limit(stderr || '', maxOutputBytes || 65536)
       });
     });
+    if (abortHandle) {
+      abortHandle.onAbort(() => {
+        child.kill();
+      });
+    }
   });
 }
 
@@ -1577,7 +1671,15 @@ function chatHtml(webview) {
     .msg { margin: 0 0 12px; padding: 10px 12px; border-left: 3px solid var(--vscode-focusBorder); background: var(--vscode-editor-inactiveSelectionBackground); white-space: pre-wrap; word-break: break-word; }
     .msg.user { border-left-color: var(--vscode-terminal-ansiGreen); }
     .msg.assistant { border-left-color: var(--vscode-terminal-ansiCyan); }
+    .msg.system { border-left-color: var(--vscode-descriptionForeground); opacity: 0.92; }
     .role { font-weight: 600; margin-bottom: 6px; opacity: 0.8; }
+    .assistant-answer { white-space: pre-wrap; }
+    details.meta { margin-top: 8px; border: 1px solid var(--vscode-panel-border); border-radius: 3px; background: var(--vscode-input-background); white-space: normal; }
+    details.meta summary { cursor: pointer; padding: 6px 8px; font-weight: 600; user-select: none; }
+    details.meta pre { margin: 0; padding: 8px; border-top: 1px solid var(--vscode-panel-border); white-space: pre-wrap; word-break: break-word; overflow-x: auto; font-family: var(--vscode-editor-font-family); font-size: var(--vscode-editor-font-size); }
+    details.think { border-left: 3px solid var(--vscode-terminal-ansiYellow); }
+    details.agent-action { border-left: 3px solid var(--vscode-terminal-ansiMagenta); }
+    details.agent-files { border-left: 3px solid var(--vscode-terminal-ansiBlue); }
     .composer { display: flex; gap: 8px; padding: 10px; border-top: 1px solid var(--vscode-panel-border); }
     textarea { flex: 1; min-height: 70px; resize: vertical; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border); border-radius: 3px; padding: 8px; font-family: var(--vscode-font-family); }
   </style>
@@ -1601,8 +1703,7 @@ function chatHtml(webview) {
     </div>
     <div id="messages"></div>
     <div class="composer">
-      <textarea id="input" placeholder="输入问题。Ctrl+Enter 发送；可用 @file:src/app.js 引用文件，@skill:report 引用 skill。连续工作时连按两次 Esc 停止。"></textarea>
-      <button class="secondary" id="work">Work</button>
+      <textarea id="input" placeholder="输入任务。Ctrl+Enter 发送；默认连续工作；可用 @file:src/app.js 引用文件，@skill:report 引用 skill；连按两次 Esc 立即中断。"></textarea>
       <button id="send">Send</button>
     </div>
   </div>
@@ -1610,11 +1711,10 @@ function chatHtml(webview) {
     const vscode = acquireVsCodeApi();
     const messages = document.getElementById('messages');
     const input = document.getElementById('input');
-    const workButton = document.getElementById('work');
     let streaming = null;
-    let workMode = false;
+    let streamingText = '';
 
-    function append(role, text) {
+    function append(role, text, parts) {
       const el = document.createElement('div');
       el.className = 'msg ' + role;
       const title = document.createElement('div');
@@ -1622,7 +1722,11 @@ function chatHtml(webview) {
       title.textContent = role === 'user' ? 'You' : role === 'assistant' ? 'Win7 Agent' : 'System';
       const body = document.createElement('div');
       body.className = 'body';
-      body.textContent = text || '';
+      if (role === 'assistant' && parts) {
+        renderAssistantParts(body, parts, text || '');
+      } else {
+        body.textContent = text || '';
+      }
       el.appendChild(title);
       el.appendChild(body);
       messages.appendChild(el);
@@ -1634,7 +1738,43 @@ function chatHtml(webview) {
       const text = input.value.trim();
       if (!text) return;
       input.value = '';
-      vscode.postMessage({ type: 'send', text, work: workMode });
+      vscode.postMessage({ type: 'send', text });
+    }
+
+    function renderAssistantParts(container, parts, fallback) {
+      while (container.firstChild) container.removeChild(container.firstChild);
+      const list = Array.isArray(parts) && parts.length ? parts : [{ kind: 'answer', label: '正式回答', content: fallback || '', collapsed: false }];
+      list.forEach((part) => {
+        const kind = part.kind || 'answer';
+        if (kind === 'answer') {
+          const answer = document.createElement('div');
+          answer.className = 'assistant-answer';
+          answer.textContent = part.content || '';
+          container.appendChild(answer);
+          return;
+        }
+        const details = document.createElement('details');
+        details.className = 'meta ' + safeClass(kind);
+        details.open = part.collapsed === false;
+        const summary = document.createElement('summary');
+        summary.textContent = part.label || labelForKind(kind);
+        const pre = document.createElement('pre');
+        pre.textContent = part.content || '';
+        details.appendChild(summary);
+        details.appendChild(pre);
+        container.appendChild(details);
+      });
+    }
+
+    function labelForKind(kind) {
+      if (kind === 'think') return 'Think';
+      if (kind === 'agent-action') return 'Agent Action';
+      if (kind === 'agent-files') return 'Agent Files';
+      return kind;
+    }
+
+    function safeClass(value) {
+      return String(value || '').replace(/[^a-zA-Z0-9_-]/g, '-');
     }
 
     document.getElementById('send').addEventListener('click', send);
@@ -1650,11 +1790,6 @@ function chatHtml(webview) {
     document.getElementById('deleteSession').addEventListener('click', () => vscode.postMessage({ type: 'deleteSession' }));
     document.getElementById('rollback').addEventListener('click', () => vscode.postMessage({ type: 'rollback' }));
     document.getElementById('clear').addEventListener('click', () => vscode.postMessage({ type: 'clear' }));
-    workButton.addEventListener('click', () => {
-      workMode = !workMode;
-      workButton.className = workMode ? 'active' : 'secondary';
-      workButton.textContent = workMode ? 'Work On' : 'Work';
-    });
     input.addEventListener('keydown', (event) => {
       if (event.key === 'Enter' && event.ctrlKey) {
         event.preventDefault();
@@ -1671,14 +1806,21 @@ function chatHtml(webview) {
       } else if (msg.type === 'append') {
         append(msg.role, msg.text);
       } else if (msg.type === 'assistantStart') {
-        streaming = append('assistant', '');
+        streamingText = '';
+        streaming = append('assistant', '正在生成...');
       } else if (msg.type === 'assistantDelta') {
-        if (!streaming) streaming = append('assistant', '');
-        streaming.textContent += msg.text || '';
+        streamingText += msg.text || '';
+        if (!streaming) streaming = append('assistant', '正在生成...');
         messages.scrollTop = messages.scrollHeight;
       } else if (msg.type === 'assistantDone') {
-        if (streaming && !streaming.textContent) streaming.textContent = msg.text || '';
+        if (!streaming) streaming = append('assistant', '');
+        renderAssistantParts(streaming, msg.parts, msg.text || streamingText);
         streaming = null;
+        streamingText = '';
+      } else if (msg.type === 'assistantAbort') {
+        if (streaming) streaming.textContent = '[aborted]';
+        streaming = null;
+        streamingText = '';
       } else if (msg.type === 'notice') {
         append('system', msg.text || '');
       } else if (msg.type === 'insertText') {

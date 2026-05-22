@@ -9,7 +9,7 @@
 
 ## 安装
 
-1. 将 `win7-agent-vscode-0.4.2.vsix` 传入内网电脑。
+1. 将 `win7-agent-vscode-0.4.3.vsix` 传入内网电脑。
 2. 打开 VS Code。
 3. 进入扩展面板，点击右上角 `...`。
 4. 选择 `Install from VSIX...`，选中该 `.vsix` 文件。
@@ -18,7 +18,7 @@
 也可以在命令行安装：
 
 ```bat
-code --install-extension win7-agent-vscode-0.4.2.vsix
+code --install-extension win7-agent-vscode-0.4.3.vsix
 ```
 
 ## 基础配置
@@ -59,7 +59,6 @@ Win7 Agent: Open Chat
 - 点击 `Project` 读取当前 VS Code 打开的项目及项目下的文本文件。
 - 点击 `Ref File` 引用某个项目文件。
 - 点击 `Skill` 引用某个 skill。
-- 点击 `Work` 开启连续工作模式。
 - 点击 `New` 新建会话，当前会话会保存到历史会话。
 - 点击 `Sessions` 切换历史会话。
 - 点击 `Rename` 修改当前会话标题。
@@ -73,11 +72,13 @@ Win7 Agent: Open Chat
 
 连续工作模式：
 
-1. 点击 `Work`，按钮显示 `Work On`。
-2. 输入一个任务，例如“阅读当前项目，修复配置读取问题，并更新说明文档”。
+1. 直接输入一个任务，例如“阅读当前项目，修复配置读取问题，并更新说明文档”。
+2. 插件默认以连续工作模式运行，没有固定步骤上限。
 3. 插件会把项目上下文交给模型，模型输出 `agent-files` 修改计划时会自动应用。
 4. 每次应用都会保存回退点。
-5. 在输入框中连续按两次 `Esc`，会在当前步骤结束后停止连续工作。
+5. 在输入框中连续按两次 `Esc`，会立即中断当前模型请求或正在运行的命令。
+
+聊天消息会把正式回答和辅助内容分开显示。正式回答默认展开，`Think`、`Agent Action`、`Agent Files` 等内容默认折叠，点击标题可以展开查看。
 
 模型修改项目文件时使用如下块：
 
