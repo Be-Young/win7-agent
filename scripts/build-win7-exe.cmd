@@ -29,6 +29,7 @@ xcopy config dist\agent-win7-x64\config /E /I /Y >nul
 xcopy skills dist\agent-win7-x64\skills /E /I /Y >nul
 copy docs\quickstart.md dist\agent-win7-x64\docs\quickstart.md >nul
 copy docs\build.md dist\agent-win7-x64\docs\build.md >nul
+copy docs\user-manual-zh.md dist\agent-win7-x64\docs\user-manual-zh.md >nul
 
 certutil -hashfile dist\agent-win7-x64\agent.exe SHA256 > dist\agent-win7-x64\checksums.txt
 echo Built dist\agent-win7-x64

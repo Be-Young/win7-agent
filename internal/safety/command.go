@@ -15,14 +15,10 @@ import (
 
 type CommandPolicy struct {
 	Enabled         bool
-	AllowedPrefixes []string
-	AuditLog         string
-	MaxOutputBytes   int
-}
-
-var dangerousPrefixes = []string{
-	"del", "erase", "format", "reg", "net", "netsh", "powershell", "wmic",
-	"shutdown", "sc", "takeown", "icacls", "diskpart", "cipher",
+	ConfirmPrefixes []string
+	BlockedPrefixes []string
+	AuditLog        string
+	MaxOutputBytes  int
 }
 
 func (p CommandPolicy) Validate(command string) error {
@@ -34,21 +30,22 @@ func (p CommandPolicy) Validate(command string) error {
 		return errors.New("command execution is disabled")
 	}
 	lower := strings.ToLower(command)
-	for _, bad := range dangerousPrefixes {
-		if lower == bad || strings.HasPrefix(lower, bad+" ") {
-			return fmt.Errorf("command prefix %q is blocked", bad)
+	for _, blocked := range p.BlockedPrefixes {
+		if hasCommandPrefix(lower, blocked) {
+			return fmt.Errorf("command prefix %q is blocked", strings.TrimSpace(blocked))
 		}
 	}
-	for _, allowed := range p.AllowedPrefixes {
-		allowed = strings.ToLower(strings.TrimSpace(allowed))
-		if allowed == "" {
-			continue
-		}
-		if lower == allowed || strings.HasPrefix(lower, allowed+" ") {
-			return nil
+	return nil
+}
+
+func (p CommandPolicy) RequiresConfirmation(command string) bool {
+	lower := strings.ToLower(strings.TrimSpace(command))
+	for _, confirm := range p.ConfirmPrefixes {
+		if hasCommandPrefix(lower, confirm) {
+			return true
 		}
 	}
-	return errors.New("command does not match allowed prefixes")
+	return false
 }
 
 func (p CommandPolicy) Run(ctx context.Context, command string) (string, error) {
@@ -94,4 +91,12 @@ func (p CommandPolicy) audit(command string, runErr error) error {
 	defer f.Close()
 	_, err = f.WriteString(line)
 	return err
+}
+
+func hasCommandPrefix(command, prefix string) bool {
+	prefix = strings.ToLower(strings.TrimSpace(prefix))
+	if command == "" || prefix == "" {
+		return false
+	}
+	return command == prefix || strings.HasPrefix(command, prefix+" ") || strings.HasPrefix(command, prefix+".")
 }

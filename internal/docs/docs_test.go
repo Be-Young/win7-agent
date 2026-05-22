@@ -62,3 +62,19 @@ func TestXlsxRoundTripBasicCells(t *testing.T) {
 		t.Fatalf("xlsx text = %q", text)
 	}
 }
+
+func TestParseRowsReadsMarkdownTable(t *testing.T) {
+	rows, err := parseRows("| Name | Score |\n| --- | --- |\n| Alice | 9 |")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("rows = %#v", rows)
+	}
+	if rows[0][0] != "Name" || rows[0][1] != "Score" {
+		t.Fatalf("header = %#v", rows[0])
+	}
+	if rows[1][0] != "Alice" || rows[1][1] != "9" {
+		t.Fatalf("data = %#v", rows[1])
+	}
+}

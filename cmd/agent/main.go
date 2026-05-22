@@ -14,6 +14,8 @@ import (
 
 	"win7-agent/internal/config"
 	"win7-agent/internal/docs"
+	"win7-agent/internal/doctemplate"
+	"win7-agent/internal/memory"
 	"win7-agent/internal/openai"
 	"win7-agent/internal/safety"
 	"win7-agent/internal/skills"
@@ -21,10 +23,12 @@ import (
 )
 
 type runtimeEnv struct {
-	baseDir string
-	cfg     config.Config
-	client  *openai.Client
-	skills  []skills.Skill
+	baseDir    string
+	configPath string
+	cfg        config.Config
+	active     config.Config
+	client     *openai.Client
+	skills     []skills.Skill
 }
 
 type agentAction struct {
@@ -54,6 +58,10 @@ func run(args []string) error {
 		return docCommand(env, args[1:])
 	case "web":
 		return webCommand(env, args[1:])
+	case "model":
+		return modelCommand(env, args[1:])
+	case "memory":
+		return memoryCommand(env, args[1:])
 	case "auth":
 		return authCommand(env, args[1:])
 	case "skills":
@@ -62,7 +70,7 @@ func run(args []string) error {
 		}
 		return nil
 	case "version":
-		fmt.Println("win7-agent 0.1")
+		fmt.Println("win7-agent 0.2.0")
 		return nil
 	case "help", "-h", "--help":
 		usage()
@@ -74,11 +82,19 @@ func run(args []string) error {
 
 func loadEnv() (runtimeEnv, error) {
 	base := baseDir()
-	cfg, err := config.Load(config.DefaultConfigPath(base))
+	configPath := config.DefaultConfigPath(base)
+	cfg, err := config.Load(configPath)
 	if err != nil {
 		return runtimeEnv{}, err
 	}
-	client := openai.New(openai.Config{
+	active := cfg.ResolveModel("")
+	client := newClient(base, active)
+	loadedSkills, _ := skills.LoadDir(filepath.Join(base, "skills"))
+	return runtimeEnv{baseDir: base, configPath: configPath, cfg: cfg, active: active, client: client, skills: loadedSkills}, nil
+}
+
+func newClient(base string, cfg config.Config) *openai.Client {
+	return openai.New(openai.Config{
 		BaseURL:            cfg.BaseURL,
 		Model:              cfg.Model,
 		APIKey:             cfg.APIKey,
@@ -88,8 +104,6 @@ func loadEnv() (runtimeEnv, error) {
 		InsecureSkipVerify: cfg.InsecureSkipVerify,
 		Headers:            cfg.Headers,
 	})
-	loadedSkills, _ := skills.LoadDir(filepath.Join(base, "skills"))
-	return runtimeEnv{baseDir: base, cfg: cfg, client: client, skills: loadedSkills}, nil
 }
 
 func baseDir() string {
@@ -105,12 +119,21 @@ func baseDir() string {
 }
 
 func chat(env runtimeEnv) error {
-	fmt.Println("Win7 Agent CLI. Type /help for commands, /quit to exit.")
+	printBanner(env)
 	reader := bufio.NewReader(os.Stdin)
-	var conversation []openai.Message
-	var contextParts []string
+	session := memory.Session{}
+	if env.cfg.Memory.Enabled {
+		loaded, err := memory.Load(memoryPath(env))
+		if err != nil {
+			fmt.Println("memory warning:", err)
+		} else {
+			session = loaded
+		}
+	}
+	conversation := append([]openai.Message{}, session.Messages...)
+	contextParts := session.ContextParts()
 	for {
-		fmt.Print("> ")
+		fmt.Printf("[%s]> ", env.active.Model)
 		line, err := reader.ReadString('\n')
 		if err != nil {
 			if errors.Is(err, os.ErrClosed) {
@@ -124,9 +147,35 @@ func chat(env runtimeEnv) error {
 		}
 		switch {
 		case line == "/quit" || line == "/exit":
+			_ = saveSession(env, session)
 			return nil
 		case line == "/help":
 			chatHelp()
+			continue
+		case line == "/status":
+			printStatus(env, session)
+			continue
+		case line == "/memory":
+			printMemory(session)
+			continue
+		case line == "/clear":
+			session = memory.Session{}
+			conversation = nil
+			contextParts = nil
+			if err := memory.Clear(memoryPath(env)); err != nil {
+				fmt.Println("memory clear error:", err)
+			} else {
+				fmt.Println("memory cleared")
+			}
+			continue
+		case line == "/model":
+			printModels(env)
+			continue
+		case strings.HasPrefix(line, "/model "):
+			name := strings.TrimSpace(strings.TrimPrefix(line, "/model "))
+			if err := switchModel(&env, name); err != nil {
+				fmt.Println("model error:", err)
+			}
 			continue
 		case line == "/skills":
 			for _, s := range env.skills {
@@ -140,7 +189,10 @@ func chat(env runtimeEnv) error {
 				fmt.Println("file error:", err)
 				continue
 			}
-			contextParts = append(contextParts, "File: "+path+"\n"+text)
+			session.AddContext("file", path, text)
+			session.Trim(env.cfg.Memory.MaxMessages, env.cfg.Memory.MaxContextItems)
+			contextParts = session.ContextParts()
+			_ = saveSession(env, session)
 			fmt.Println("loaded file:", path)
 			continue
 		case strings.HasPrefix(line, "/url "):
@@ -150,7 +202,10 @@ func chat(env runtimeEnv) error {
 				fmt.Println("url error:", err)
 				continue
 			}
-			contextParts = append(contextParts, webreader.Markdown(page))
+			session.AddContext("url", raw, webreader.Markdown(page))
+			session.Trim(env.cfg.Memory.MaxMessages, env.cfg.Memory.MaxContextItems)
+			contextParts = session.ContextParts()
+			_ = saveSession(env, session)
 			fmt.Println("loaded url:", raw)
 			continue
 		case strings.HasPrefix(line, "/run "):
@@ -169,10 +224,10 @@ func chat(env runtimeEnv) error {
 			fmt.Println("api error:", err)
 			continue
 		}
-		conversation = append(conversation, openai.Message{Role: "user", Content: line}, openai.Message{Role: "assistant", Content: answer})
-		if len(conversation) > 20 {
-			conversation = conversation[len(conversation)-20:]
-		}
+		session.AddMessages(openai.Message{Role: "user", Content: line}, openai.Message{Role: "assistant", Content: answer})
+		session.Trim(env.cfg.Memory.MaxMessages, env.cfg.Memory.MaxContextItems)
+		conversation = append([]openai.Message{}, session.Messages...)
+		_ = saveSession(env, session)
 		if action, ok := extractAction(answer); ok && action.Action == "run_command" {
 			fmt.Println("\nModel requested command:", action.Command)
 			if err := runCommand(env, reader, action.Command); err != nil {
@@ -245,7 +300,35 @@ func docCommand(env runtimeEnv, args []string) error {
 		if out == "" || prompt == "" {
 			return errors.New(`usage: agent doc create --format txt|md|csv|docx|xlsx --out <path> --prompt "<要求>"`)
 		}
-		answer, err := env.client.Chat(context.Background(), []openai.Message{{Role: "user", Content: "Create a "+format+" document:\n"+prompt}})
+		answer, err := env.client.Chat(context.Background(), []openai.Message{{Role: "user", Content: "Create a " + format + " document:\n" + prompt}})
+		if err != nil {
+			return err
+		}
+		if err := docs.WriteContent(out, answer); err != nil {
+			return err
+		}
+		fmt.Println("wrote:", out)
+		return nil
+	case "draft":
+		draftArgs := args[1:]
+		kind := option(draftArgs, "type", "notice")
+		out := option(draftArgs, "out", "")
+		topic := option(draftArgs, "topic", "")
+		tone := option(draftArgs, "tone", "正式、清晰、适合公司内部沟通")
+		if topic == "" {
+			positional := positionalArgs(draftArgs)
+			if len(positional) > 0 {
+				topic = strings.Join(positional, " ")
+			}
+		}
+		if out == "" || topic == "" {
+			return errors.New(`usage: agent doc draft --type meeting|email|notice|report|summary|proposal --out <path> --topic "<主题>"`)
+		}
+		prompt, err := doctemplate.BuildDraftPrompt(kind, topic, tone)
+		if err != nil {
+			return err
+		}
+		answer, err := env.client.Chat(context.Background(), []openai.Message{{Role: "user", Content: prompt}})
 		if err != nil {
 			return err
 		}
@@ -256,6 +339,49 @@ func docCommand(env runtimeEnv, args []string) error {
 		return nil
 	default:
 		return fmt.Errorf("unknown doc command %q", args[0])
+	}
+}
+
+func modelCommand(env runtimeEnv, args []string) error {
+	if len(args) == 0 || args[0] == "current" {
+		fmt.Printf("active model: %s (%s)\n", env.active.Model, env.active.BaseURL)
+		if env.cfg.ActiveModel != "" {
+			fmt.Println("profile:", env.cfg.ActiveModel)
+		}
+		return nil
+	}
+	switch args[0] {
+	case "list":
+		printModels(env)
+		return nil
+	case "use":
+		if len(args) < 2 {
+			return errors.New("usage: agent model use <name>")
+		}
+		return switchModel(&env, args[1])
+	default:
+		return fmt.Errorf("unknown model command %q", args[0])
+	}
+}
+
+func memoryCommand(env runtimeEnv, args []string) error {
+	session, err := memory.Load(memoryPath(env))
+	if err != nil {
+		return err
+	}
+	if len(args) == 0 || args[0] == "show" {
+		printMemory(session)
+		return nil
+	}
+	switch args[0] {
+	case "clear":
+		if err := memory.Clear(memoryPath(env)); err != nil {
+			return err
+		}
+		fmt.Println("memory cleared")
+		return nil
+	default:
+		return fmt.Errorf("unknown memory command %q", args[0])
 	}
 }
 
@@ -380,7 +506,7 @@ func readURL(env runtimeEnv, raw string) (webreader.Page, error) {
 }
 
 func send(env runtimeEnv, messages []openai.Message) (string, error) {
-	if env.cfg.Stream {
+	if env.active.Stream {
 		answer, err := env.client.ChatStream(context.Background(), messages, func(delta string) {
 			fmt.Print(delta)
 		})
@@ -398,15 +524,16 @@ func send(env runtimeEnv, messages []openai.Message) (string, error) {
 func runCommand(env runtimeEnv, reader *bufio.Reader, command string) error {
 	policy := safety.CommandPolicy{
 		Enabled:         env.cfg.Command.Enabled,
-		AllowedPrefixes: env.cfg.Command.AllowedPrefixes,
-		AuditLog:         absMaybe(env.baseDir, env.cfg.Command.AuditLog),
-		MaxOutputBytes:   env.cfg.Command.MaxOutputBytes,
+		ConfirmPrefixes: env.cfg.Command.ConfirmPrefixes,
+		BlockedPrefixes: env.cfg.Command.BlockedPrefixes,
+		AuditLog:        absMaybe(env.baseDir, env.cfg.Command.AuditLog),
+		MaxOutputBytes:  env.cfg.Command.MaxOutputBytes,
 	}
 	if err := policy.Validate(command); err != nil {
 		return err
 	}
-	if env.cfg.Command.AlwaysConfirm {
-		fmt.Printf("Run command? %s [y/N]: ", command)
+	if env.cfg.Command.AlwaysConfirm || policy.RequiresConfirmation(command) {
+		fmt.Printf("High-risk command, confirm run? %s [y/N]: ", command)
 		line, _ := reader.ReadString('\n')
 		if strings.ToLower(strings.TrimSpace(line)) != "y" {
 			return errors.New("command cancelled")
@@ -443,6 +570,7 @@ func systemPrompt(skillPrompt string, contextParts []string) string {
 	b.WriteString("You are Win7 Agent CLI, an assistant running in an offline corporate intranet. ")
 	b.WriteString("Use only the provided context, local files, intranet URLs, and configured OpenAI-compatible API. ")
 	b.WriteString("If you need a local command, request it in a fenced block exactly like: ```agent-action\n{\"action\":\"run_command\",\"command\":\"dir\"}\n```. ")
+	b.WriteString("Ordinary local commands are allowed; high-risk command prefixes require user confirmation. ")
 	b.WriteString("Do not ask to bypass corporate security controls.\n")
 	if skillPrompt != "" {
 		b.WriteByte('\n')
@@ -479,9 +607,14 @@ Usage:
   agent doc ask <path> "<question>"
   agent doc rewrite <input> --out <output> --instruction "<要求>"
   agent doc create --format txt|md|csv|docx|xlsx --out <path> --prompt "<要求>"
+  agent doc draft --type meeting|email|notice|report|summary|proposal --out <path> --topic "<主题>"
   agent web read <url>
   agent web ask <url> "<question>"
   agent web save <url> --out <path.md>
+  agent model list
+  agent model use <name>
+  agent memory show
+  agent memory clear
   agent auth set <name> --match <url-substring> --header "Cookie: a=b"
   agent version`)
 }
@@ -490,9 +623,90 @@ func chatHelp() {
 	fmt.Println(`Chat commands:
   /file <path>   load txt/md/csv/json/log/docx/xlsx as context
   /url <url>     load an intranet page as context
-  /run <command> run a whitelisted command after confirmation
+  /run <command> run a local command; high-risk prefixes ask confirmation
+  /model         list model profiles
+  /model <name>  switch model profile and save config
+  /status        show active model, memory, and context status
+  /memory        show remembered conversation/context counts
+  /clear         clear persistent conversation memory
   /skills        list local SKILL.md files
   /quit          exit`)
+}
+
+func printBanner(env runtimeEnv) {
+	fmt.Println("Win7 Agent CLI v0.2.0")
+	fmt.Printf("Model: %s", env.active.Model)
+	if env.cfg.ActiveModel != "" {
+		fmt.Printf(" profile=%s", env.cfg.ActiveModel)
+	}
+	fmt.Println()
+	fmt.Println("Type /help for commands, /status for context, /quit to exit.")
+}
+
+func printStatus(env runtimeEnv, session memory.Session) {
+	fmt.Printf("model: %s\n", env.active.Model)
+	fmt.Printf("api: %s\n", env.active.BaseURL)
+	fmt.Printf("memory: %t, messages=%d, context=%d\n", env.cfg.Memory.Enabled, len(session.Messages), len(session.Context))
+	fmt.Printf("commands: enabled=%t, high-risk-confirm-prefixes=%d\n", env.cfg.Command.Enabled, len(env.cfg.Command.ConfirmPrefixes))
+}
+
+func printMemory(session memory.Session) {
+	fmt.Printf("remembered messages: %d\n", len(session.Messages))
+	fmt.Printf("remembered context items: %d\n", len(session.Context))
+	for _, item := range session.Context {
+		fmt.Printf("- %s: %s\n", item.Kind, item.Source)
+	}
+}
+
+func printModels(env runtimeEnv) {
+	if len(env.cfg.Models) == 0 {
+		fmt.Printf("default: %s (%s)\n", env.cfg.Model, env.cfg.BaseURL)
+		return
+	}
+	for name, profile := range env.cfg.Models {
+		marker := " "
+		if name == env.cfg.ActiveModel {
+			marker = "*"
+		}
+		modelName := profile.Model
+		if modelName == "" {
+			modelName = env.cfg.Model
+		}
+		baseURL := profile.BaseURL
+		if baseURL == "" {
+			baseURL = env.cfg.BaseURL
+		}
+		fmt.Printf("%s %s: %s (%s)\n", marker, name, modelName, baseURL)
+	}
+}
+
+func switchModel(env *runtimeEnv, name string) error {
+	if name == "" || name == "default" {
+		env.cfg.ActiveModel = ""
+	} else if _, ok := env.cfg.Models[name]; !ok {
+		return fmt.Errorf("unknown model profile %q", name)
+	} else {
+		env.cfg.ActiveModel = name
+	}
+	if err := config.Save(env.configPath, env.cfg); err != nil {
+		return err
+	}
+	env.active = env.cfg.ResolveModel("")
+	env.client = newClient(env.baseDir, env.active)
+	fmt.Printf("switched model: %s\n", env.active.Model)
+	return nil
+}
+
+func memoryPath(env runtimeEnv) string {
+	return absMaybe(env.baseDir, env.cfg.Memory.SessionFile)
+}
+
+func saveSession(env runtimeEnv, session memory.Session) error {
+	if !env.cfg.Memory.Enabled {
+		return nil
+	}
+	session.Trim(env.cfg.Memory.MaxMessages, env.cfg.Memory.MaxContextItems)
+	return memory.Save(memoryPath(env), session)
 }
 
 func option(args []string, name, fallback string) string {

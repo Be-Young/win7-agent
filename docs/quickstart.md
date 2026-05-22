@@ -21,9 +21,13 @@ agent.exe chat
 ```bat
 agent.exe chat
 agent.exe skills
+agent.exe model list
+agent.exe model use fast
+agent.exe memory show
 agent.exe doc read report.docx
 agent.exe doc ask report.docx "总结这个文档"
 agent.exe doc rewrite report.docx --out report.rewrite.docx --instruction "改写得更正式"
+agent.exe doc draft --type meeting --out meeting.md --topic "下周项目例会"
 agent.exe doc create --format xlsx --out table.xlsx --prompt "生成三列表格：姓名、部门、备注"
 agent.exe web read http://intranet/
 agent.exe web ask http://intranet/ "这页讲了什么"
@@ -31,17 +35,18 @@ agent.exe web ask http://intranet/ "这页讲了什么"
 
 ## Command Execution
 
-Local command execution is disabled by default. To enable it, set:
+Local command execution is enabled by default. Ordinary commands run directly; high-risk command prefixes ask for confirmation:
 
 ```json
 "command": {
   "enabled": true,
-  "allowed_prefixes": ["dir", "type", "findstr", "where", "ver", "echo"],
-  "always_confirm": true
+  "confirm_prefixes": ["del", "reg", "powershell", "shutdown"],
+  "blocked_prefixes": [],
+  "always_confirm": false
 }
 ```
 
-Commands outside the allowlist are refused.
+Commands in `blocked_prefixes` are refused.
 
 ## Limitations
 

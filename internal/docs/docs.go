@@ -16,11 +16,11 @@ import (
 )
 
 var textExts = map[string]bool{
-	".txt": true,
-	".md": true,
-	".csv": true,
+	".txt":  true,
+	".md":   true,
+	".csv":  true,
 	".json": true,
-	".log": true,
+	".log":  true,
 }
 
 func Read(path string, maxChars int) (string, error) {
@@ -354,6 +354,9 @@ func xlsxSheet(rows [][]string) string {
 }
 
 func parseRows(content string) ([][]string, error) {
+	if rows := parseMarkdownTable(content); len(rows) > 0 {
+		return rows, nil
+	}
 	reader := csv.NewReader(strings.NewReader(content))
 	reader.FieldsPerRecord = -1
 	rows, err := reader.ReadAll()
@@ -370,6 +373,31 @@ func parseRows(content string) ([][]string, error) {
 		fallback = [][]string{{""}}
 	}
 	return fallback, nil
+}
+
+func parseMarkdownTable(content string) [][]string {
+	var rows [][]string
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "|") || !strings.HasSuffix(line, "|") {
+			continue
+		}
+		trimmed := strings.Trim(line, "|")
+		parts := strings.Split(trimmed, "|")
+		var row []string
+		separator := true
+		for _, part := range parts {
+			cell := strings.TrimSpace(part)
+			if cell != "" && strings.Trim(cell, "-: ") != "" {
+				separator = false
+			}
+			row = append(row, cell)
+		}
+		if len(row) > 0 && !separator {
+			rows = append(rows, row)
+		}
+	}
+	return rows
 }
 
 func colName(n int) string {

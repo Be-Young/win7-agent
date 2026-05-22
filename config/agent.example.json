@@ -1,6 +1,23 @@
 {
   "base_url": "http://127.0.0.1:8000/v1/chat/completions",
   "model": "local-model",
+  "active_model": "",
+  "models": {
+    "fast": {
+      "base_url": "http://127.0.0.1:8000/v1/chat/completions",
+      "model": "fast-model",
+      "api_key": "",
+      "stream": true,
+      "headers": {}
+    },
+    "deep": {
+      "base_url": "http://127.0.0.1:8000/v1/chat/completions",
+      "model": "deep-model",
+      "api_key": "",
+      "stream": true,
+      "headers": {}
+    }
+  },
   "api_key": "",
   "stream": false,
   "timeout_seconds": 120,
@@ -19,18 +36,33 @@
     }
   },
   "command": {
-    "enabled": false,
-    "allowed_prefixes": [
-      "dir",
-      "type",
-      "findstr",
-      "where",
-      "ver",
-      "echo"
+    "enabled": true,
+    "confirm_prefixes": [
+      "del",
+      "erase",
+      "format",
+      "reg",
+      "net",
+      "netsh",
+      "powershell",
+      "wmic",
+      "shutdown",
+      "sc",
+      "takeown",
+      "icacls",
+      "diskpart",
+      "cipher"
     ],
-    "always_confirm": true,
+    "blocked_prefixes": [],
+    "always_confirm": false,
     "audit_log": "logs/commands.log",
     "max_output_bytes": 65536
+  },
+  "memory": {
+    "enabled": true,
+    "session_file": "sessions/default.json",
+    "max_messages": 40,
+    "max_context_items": 12
   },
   "max_content_chars": 120000
 }

@@ -8,17 +8,28 @@ import (
 )
 
 type Config struct {
-	BaseURL            string                 `json:"base_url"`
-	Model              string                 `json:"model"`
-	APIKey             string                 `json:"api_key"`
-	Stream             bool                   `json:"stream"`
-	TimeoutSeconds     int                    `json:"timeout_seconds"`
-	CAFile             string                 `json:"ca_file"`
-	InsecureSkipVerify bool                   `json:"insecure_skip_verify"`
-	Headers            map[string]string      `json:"headers"`
-	AuthProfiles       map[string]AuthProfile `json:"auth_profiles"`
-	Command            CommandConfig          `json:"command"`
-	MaxContentChars     int                    `json:"max_content_chars"`
+	BaseURL            string                  `json:"base_url"`
+	Model              string                  `json:"model"`
+	ActiveModel        string                  `json:"active_model"`
+	Models             map[string]ModelProfile `json:"models"`
+	APIKey             string                  `json:"api_key"`
+	Stream             bool                    `json:"stream"`
+	TimeoutSeconds     int                     `json:"timeout_seconds"`
+	CAFile             string                  `json:"ca_file"`
+	InsecureSkipVerify bool                    `json:"insecure_skip_verify"`
+	Headers            map[string]string       `json:"headers"`
+	AuthProfiles       map[string]AuthProfile  `json:"auth_profiles"`
+	Command            CommandConfig           `json:"command"`
+	Memory             MemoryConfig            `json:"memory"`
+	MaxContentChars    int                     `json:"max_content_chars"`
+}
+
+type ModelProfile struct {
+	BaseURL string            `json:"base_url"`
+	Model   string            `json:"model"`
+	APIKey  string            `json:"api_key"`
+	Stream  *bool             `json:"stream,omitempty"`
+	Headers map[string]string `json:"headers"`
 }
 
 type AuthProfile struct {
@@ -31,27 +42,43 @@ type AuthProfile struct {
 
 type CommandConfig struct {
 	Enabled         bool     `json:"enabled"`
-	AllowedPrefixes []string `json:"allowed_prefixes"`
+	ConfirmPrefixes []string `json:"confirm_prefixes"`
+	BlockedPrefixes []string `json:"blocked_prefixes"`
 	AlwaysConfirm   bool     `json:"always_confirm"`
-	AuditLog         string   `json:"audit_log"`
-	MaxOutputBytes   int      `json:"max_output_bytes"`
+	AuditLog        string   `json:"audit_log"`
+	MaxOutputBytes  int      `json:"max_output_bytes"`
+}
+
+type MemoryConfig struct {
+	Enabled         bool   `json:"enabled"`
+	SessionFile     string `json:"session_file"`
+	MaxMessages     int    `json:"max_messages"`
+	MaxContextItems int    `json:"max_context_items"`
 }
 
 func Default() Config {
 	return Config{
-		BaseURL:        "http://127.0.0.1:8000/v1/chat/completions",
-		Model:          "local-model",
-		Stream:         false,
-		TimeoutSeconds: 120,
-		Headers:        map[string]string{},
-		AuthProfiles:   map[string]AuthProfile{},
+		BaseURL:         "http://127.0.0.1:8000/v1/chat/completions",
+		Model:           "local-model",
+		Stream:          false,
+		TimeoutSeconds:  120,
+		Headers:         map[string]string{},
+		Models:          map[string]ModelProfile{},
+		AuthProfiles:    map[string]AuthProfile{},
 		MaxContentChars: 120000,
 		Command: CommandConfig{
-			Enabled:         false,
-			AllowedPrefixes: []string{"dir", "type", "findstr", "where", "ver", "echo"},
-			AlwaysConfirm:   true,
-			AuditLog:         filepath.Join("logs", "commands.log"),
-			MaxOutputBytes:   65536,
+			Enabled:         true,
+			ConfirmPrefixes: []string{"del", "erase", "format", "reg", "net", "netsh", "powershell", "wmic", "shutdown", "sc", "takeown", "icacls", "diskpart", "cipher"},
+			BlockedPrefixes: []string{},
+			AlwaysConfirm:   false,
+			AuditLog:        filepath.Join("logs", "commands.log"),
+			MaxOutputBytes:  65536,
+		},
+		Memory: MemoryConfig{
+			Enabled:         true,
+			SessionFile:     filepath.Join("sessions", "default.json"),
+			MaxMessages:     40,
+			MaxContextItems: 12,
 		},
 	}
 }
@@ -98,14 +125,20 @@ func applyDefaults(cfg *Config) {
 	if cfg.Headers == nil {
 		cfg.Headers = map[string]string{}
 	}
+	if cfg.Models == nil {
+		cfg.Models = map[string]ModelProfile{}
+	}
 	if cfg.AuthProfiles == nil {
 		cfg.AuthProfiles = map[string]AuthProfile{}
 	}
 	if cfg.MaxContentChars == 0 {
 		cfg.MaxContentChars = def.MaxContentChars
 	}
-	if len(cfg.Command.AllowedPrefixes) == 0 {
-		cfg.Command.AllowedPrefixes = def.Command.AllowedPrefixes
+	if len(cfg.Command.ConfirmPrefixes) == 0 {
+		cfg.Command.ConfirmPrefixes = def.Command.ConfirmPrefixes
+	}
+	if cfg.Command.BlockedPrefixes == nil {
+		cfg.Command.BlockedPrefixes = def.Command.BlockedPrefixes
 	}
 	if cfg.Command.AuditLog == "" {
 		cfg.Command.AuditLog = def.Command.AuditLog
@@ -113,6 +146,53 @@ func applyDefaults(cfg *Config) {
 	if cfg.Command.MaxOutputBytes == 0 {
 		cfg.Command.MaxOutputBytes = def.Command.MaxOutputBytes
 	}
+	if cfg.Memory.SessionFile == "" {
+		cfg.Memory.SessionFile = def.Memory.SessionFile
+	}
+	if cfg.Memory.MaxMessages == 0 {
+		cfg.Memory.MaxMessages = def.Memory.MaxMessages
+	}
+	if cfg.Memory.MaxContextItems == 0 {
+		cfg.Memory.MaxContextItems = def.Memory.MaxContextItems
+	}
+}
+
+func (cfg Config) ResolveModel(name string) Config {
+	applyDefaults(&cfg)
+	if name == "" {
+		name = cfg.ActiveModel
+	}
+	if name == "" {
+		return cfg
+	}
+	profile, ok := cfg.Models[name]
+	if !ok {
+		return cfg
+	}
+	if profile.BaseURL != "" {
+		cfg.BaseURL = profile.BaseURL
+	}
+	if profile.Model != "" {
+		cfg.Model = profile.Model
+	}
+	if profile.APIKey != "" {
+		cfg.APIKey = profile.APIKey
+	}
+	if profile.Stream != nil {
+		cfg.Stream = *profile.Stream
+	}
+	if profile.Headers != nil {
+		merged := map[string]string{}
+		for k, v := range cfg.Headers {
+			merged[k] = v
+		}
+		for k, v := range profile.Headers {
+			merged[k] = v
+		}
+		cfg.Headers = merged
+	}
+	cfg.ActiveModel = name
+	return cfg
 }
 
 func DefaultConfigPath(baseDir string) string {
