@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.0
+
+- Added workspace/project context loading.
+- Added file references and skill references in chat.
+- Added isolated session management with new, switch, rename, and delete.
+- Added continuous work mode with double-Escape stop.
+- Added model-proposed project file edits through `agent-files` blocks.
+- Added rollback snapshots for extension-applied file changes.
+
 ## 0.3.0
 
 - Added Windows 7 compatible VS Code extension.

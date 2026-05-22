@@ -2,6 +2,16 @@
 
 const DEFAULT_BASE_URL = 'http://127.0.0.1:8000/v1/chat/completions';
 const DEFAULT_MODEL = 'local-model';
+const DEFAULT_TEXT_EXTENSIONS = [
+  '.bat', '.c', '.cc', '.cmd', '.conf', '.cpp', '.cs', '.css', '.csv', '.go', '.h', '.hpp',
+  '.htm', '.html', '.ini', '.java', '.js', '.json', '.jsx', '.log', '.lua', '.m', '.md',
+  '.php', '.properties', '.py', '.rb', '.rs', '.sh', '.sql', '.swift', '.toml', '.ts',
+  '.tsx', '.txt', '.vb', '.vue', '.xml', '.yaml', '.yml'
+];
+const DEFAULT_EXCLUDE_DIRS = [
+  '.git', '.svn', '.hg', '.vscode', 'node_modules', 'dist', 'build', 'out', 'bin', 'obj',
+  'vendor', 'target', '.idea', '.vs', '__pycache__'
+];
 
 function resolveModel(settings, requestedName) {
   const cfg = settings || {};
@@ -157,6 +167,313 @@ function selectSkills(skills, query, explicitNames) {
   });
   scored.sort((a, b) => b.score - a.score || a.index - b.index);
   return scored.slice(0, 3).map((item) => item.skill);
+}
+
+function parseReferences(text) {
+  const value = String(text || '');
+  const files = [];
+  const skills = [];
+  collectMatches(value, /(?:^|\s)@file:("[^"]+"|'[^']+'|[^\s，,；;]+)/g, files, stripReferenceValue);
+  collectMatches(value, /(?:^|\s)#file:("[^"]+"|'[^']+'|[^\s，,；;]+)/g, files, stripReferenceValue);
+  collectMatches(value, /\[\[([^\]]+)\]\]/g, files, stripReferenceValue);
+  collectMatches(value, /(?:^|\s)@skill:([a-zA-Z0-9_-]+)/g, skills, stripReferenceValue);
+  collectMatches(value, /(?:^|\s)#skill:([a-zA-Z0-9_-]+)/g, skills, stripReferenceValue);
+  return {
+    files: unique(files).map(normalizeWorkspacePath),
+    skills: unique(skills)
+  };
+}
+
+function collectMatches(text, regex, out, transform) {
+  let match;
+  while ((match = regex.exec(text)) !== null) {
+    const value = transform(match[1]);
+    if (value) {
+      out.push(value);
+    }
+  }
+}
+
+function stripReferenceValue(value) {
+  const text = String(value || '').trim();
+  if ((text[0] === '"' && text[text.length - 1] === '"') || (text[0] === '\'' && text[text.length - 1] === '\'')) {
+    return text.slice(1, -1).trim();
+  }
+  return text;
+}
+
+function unique(items) {
+  const seen = {};
+  const out = [];
+  items.forEach((item) => {
+    const key = String(item || '').toLowerCase();
+    if (!key || seen[key]) {
+      return;
+    }
+    seen[key] = true;
+    out.push(item);
+  });
+  return out;
+}
+
+function normalizeWorkspacePath(input) {
+  let value = String(input || '').trim().replace(/\\/g, '/');
+  value = value.replace(/^file:\/+/i, '');
+  value = value.replace(/^\.\/+/, '');
+  if (!value) {
+    throw new Error('empty workspace path');
+  }
+  if (/^[a-zA-Z]:\//.test(value) || value[0] === '/') {
+    throw new Error('absolute path is not allowed: ' + input);
+  }
+  const parts = [];
+  value.split('/').forEach((part) => {
+    if (!part || part === '.') {
+      return;
+    }
+    if (part === '..') {
+      throw new Error('path outside workspace is not allowed: ' + input);
+    }
+    parts.push(part);
+  });
+  if (parts.length === 0) {
+    throw new Error('empty workspace path');
+  }
+  return parts.join('/');
+}
+
+function shouldIncludeWorkspaceFile(relativePath, bytes, options) {
+  let normalized;
+  try {
+    normalized = normalizeWorkspacePath(relativePath);
+  } catch (err) {
+    return false;
+  }
+  const opts = options || {};
+  const excludeDirs = (opts.excludeDirs || DEFAULT_EXCLUDE_DIRS).map((item) => String(item).toLowerCase());
+  const segments = normalized.split('/').map((item) => item.toLowerCase());
+  for (let i = 0; i < segments.length - 1; i += 1) {
+    if (excludeDirs.indexOf(segments[i]) >= 0) {
+      return false;
+    }
+  }
+  if (opts.maxFileBytes > 0 && bytes > opts.maxFileBytes) {
+    return false;
+  }
+  const ext = extensionOf(normalized);
+  const allowed = (opts.textExtensions || DEFAULT_TEXT_EXTENSIONS).map((item) => String(item).toLowerCase());
+  if (allowed.indexOf(ext) < 0) {
+    return false;
+  }
+  return true;
+}
+
+function extensionOf(relativePath) {
+  const name = String(relativePath || '').split('/').pop() || '';
+  const idx = name.lastIndexOf('.');
+  return idx >= 0 ? name.slice(idx).toLowerCase() : '';
+}
+
+function buildWorkspaceContext(files, options) {
+  const opts = options || {};
+  const maxChars = opts.maxChars || 120000;
+  const sorted = (Array.isArray(files) ? files : []).slice().sort((a, b) => String(a.path).localeCompare(String(b.path)));
+  const lines = ['Workspace file tree:'];
+  sorted.forEach((file) => {
+    lines.push('- ' + file.path + (file.truncated ? ' [truncated]' : ''));
+  });
+  lines.push('', 'Workspace file contents:');
+  let used = lines.join('\n').length;
+  for (let i = 0; i < sorted.length; i += 1) {
+    const header = '\n--- file: ' + sorted[i].path + '\n';
+    const content = String(sorted[i].content || '');
+    const remaining = maxChars - used - header.length;
+    if (remaining <= 0) {
+      lines.push('\n[workspace context truncated]');
+      break;
+    }
+    lines.push(header + content.slice(0, remaining));
+    used += header.length + Math.min(content.length, remaining);
+    if (content.length > remaining) {
+      lines.push('\n[file content truncated]');
+      break;
+    }
+  }
+  return lines.join('\n');
+}
+
+function extractFileChangePlan(text) {
+  const block = /```agent-files\s*([\s\S]*?)```/i.exec(String(text || ''));
+  if (!block) {
+    return null;
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(block[1].trim());
+  } catch (err) {
+    throw new Error('invalid agent-files JSON: ' + err.message);
+  }
+  const changes = Array.isArray(parsed.changes) ? parsed.changes : [];
+  if (changes.length === 0) {
+    throw new Error('agent-files block has no changes');
+  }
+  return {
+    summary: String(parsed.summary || ''),
+    changes: changes.map(normalizeFileChange)
+  };
+}
+
+function normalizeFileChange(change) {
+  const action = String(change && change.action || 'write').toLowerCase();
+  if (['create', 'write', 'replace', 'delete'].indexOf(action) < 0) {
+    throw new Error('unsupported file action: ' + action);
+  }
+  const normalized = {
+    action: action,
+    path: normalizeWorkspacePath(change.path || ''),
+    content: change.content == null ? '' : String(change.content),
+    find: change.find == null ? '' : String(change.find),
+    replace: change.replace == null ? '' : String(change.replace)
+  };
+  if ((action === 'create' || action === 'write') && change.content == null) {
+    throw new Error(action + ' action requires content for ' + normalized.path);
+  }
+  if (action === 'replace' && normalized.find === '') {
+    throw new Error('replace action requires find text for ' + normalized.path);
+  }
+  return normalized;
+}
+
+function applyTextChange(currentContent, change) {
+  const action = String(change && change.action || 'write').toLowerCase();
+  if (action === 'create' || action === 'write') {
+    return String(change.content || '');
+  }
+  if (action === 'replace') {
+    const current = String(currentContent || '');
+    const find = String(change.find || '');
+    if (find === '' || current.indexOf(find) < 0) {
+      throw new Error('find text not found for replace operation');
+    }
+    return current.replace(find, String(change.replace || ''));
+  }
+  if (action === 'delete') {
+    return null;
+  }
+  throw new Error('unsupported file action: ' + action);
+}
+
+function buildRollbackSnapshot(id, changes, originals) {
+  const source = originals || {};
+  return {
+    id: String(id || ''),
+    createdAt: new Date().toISOString(),
+    files: (Array.isArray(changes) ? changes : []).map((change) => {
+      const rel = normalizeWorkspacePath(change.path);
+      const original = source[rel] || { exists: false, content: '' };
+      return {
+        path: rel,
+        originalExists: original.exists === true,
+        originalContent: original.content == null ? '' : String(original.content)
+      };
+    })
+  };
+}
+
+function recordEscPress(state, nowMs) {
+  const current = state || {};
+  const now = typeof nowMs === 'number' ? nowMs : Date.now();
+  const last = current.lastEscAt || 0;
+  const stop = last > 0 && now - last <= 1000;
+  return {
+    lastEscAt: stop ? 0 : now,
+    stop: stop
+  };
+}
+
+function cleanSessionTitle(title) {
+  const value = String(title || '').replace(/\s+/g, ' ').trim();
+  if (!value) {
+    return 'New Session';
+  }
+  return value.length > 60 ? value.slice(0, 60) : value;
+}
+
+function ensureSessionIndex(index, fallbackId, fallbackTitle, now) {
+  const source = index && typeof index === 'object' ? index : {};
+  const sessions = Array.isArray(source.sessions) ? source.sessions.slice() : [];
+  if (sessions.length > 0) {
+    const active = source.activeId && sessions.some((item) => item.id === source.activeId)
+      ? source.activeId
+      : sessions[0].id;
+    return { activeId: active, sessions: sessions.map(normalizeSessionMeta) };
+  }
+  const id = fallbackId || 'session-1';
+  return {
+    activeId: id,
+    sessions: [normalizeSessionMeta({ id: id, title: fallbackTitle || 'New Session', createdAt: now, updatedAt: now })]
+  };
+}
+
+function addSession(index, id, title, now) {
+  const current = ensureSessionIndex(index, id, title, now);
+  if (current.sessions.some((item) => item.id === id)) {
+    return setActiveSession(current, id);
+  }
+  current.sessions.push(normalizeSessionMeta({ id: id, title: title, createdAt: now, updatedAt: now }));
+  current.activeId = id;
+  return current;
+}
+
+function setActiveSession(index, id) {
+  const current = ensureSessionIndex(index, id, 'New Session');
+  if (!current.sessions.some((item) => item.id === id)) {
+    throw new Error('unknown session: ' + id);
+  }
+  current.activeId = id;
+  return current;
+}
+
+function renameSession(index, id, title) {
+  const current = ensureSessionIndex(index, id, title);
+  let found = false;
+  current.sessions = current.sessions.map((item) => {
+    if (item.id !== id) {
+      return item;
+    }
+    found = true;
+    const copy = Object.assign({}, item);
+    copy.title = cleanSessionTitle(title);
+    copy.updatedAt = new Date().toISOString();
+    return copy;
+  });
+  if (!found) {
+    throw new Error('unknown session: ' + id);
+  }
+  return current;
+}
+
+function deleteSession(index, id) {
+  const current = ensureSessionIndex(index, id, 'New Session');
+  const remaining = current.sessions.filter((item) => item.id !== id);
+  if (remaining.length === current.sessions.length) {
+    throw new Error('unknown session: ' + id);
+  }
+  if (remaining.length === 0) {
+    return { activeId: '', sessions: [] };
+  }
+  const active = current.activeId === id ? remaining[remaining.length - 1].id : current.activeId;
+  return { activeId: active, sessions: remaining };
+}
+
+function normalizeSessionMeta(meta) {
+  const now = new Date().toISOString();
+  return {
+    id: String(meta.id || ''),
+    title: cleanSessionTitle(meta.title || ''),
+    createdAt: meta.createdAt || now,
+    updatedAt: meta.updatedAt || meta.createdAt || now
+  };
 }
 
 function extractHtml(html, baseUrl) {
@@ -334,6 +651,9 @@ function buildSystemPrompt(skillPrompt, contextParts) {
   const lines = [
     'You are Win7 Agent for VS Code, an assistant running in an offline corporate intranet.',
     'Use only the provided context, local files, intranet URLs, and configured OpenAI-compatible API.',
+    'You may inspect workspace context and propose project file edits.',
+    'For file edits, return a fenced block exactly like: ```agent-files\n{"summary":"short summary","changes":[{"action":"write","path":"relative/path.txt","content":"new content"},{"action":"replace","path":"relative/path.txt","find":"old","replace":"new"}]}\n```.',
+    'Allowed file actions are create, write, replace, and delete. Use only relative workspace paths.',
     'Ordinary local commands are allowed; high-risk command prefixes require user confirmation.',
     'Do not ask to bypass corporate security controls.'
   ];
@@ -392,6 +712,20 @@ module.exports = {
   requiresConfirmation,
   parseSkillMarkdown,
   selectSkills,
+  parseReferences,
+  normalizeWorkspacePath,
+  shouldIncludeWorkspaceFile,
+  buildWorkspaceContext,
+  extractFileChangePlan,
+  applyTextChange,
+  buildRollbackSnapshot,
+  recordEscPress,
+  cleanSessionTitle,
+  ensureSessionIndex,
+  addSession,
+  setActiveSession,
+  renameSession,
+  deleteSession,
   extractHtml,
   trimMemory,
   contextToParts,

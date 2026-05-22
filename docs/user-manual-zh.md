@@ -37,7 +37,7 @@ agent.exe chat
 
 Windows 7 只能使用 VS Code 1.70.x，建议固定安装 VS Code 1.70.3。
 
-1. 获取 `win7-agent-vscode-0.3.0.vsix`。
+1. 获取 `win7-agent-vscode-0.4.0.vsix`。
 2. 打开 VS Code。
 3. 进入扩展面板，点击右上角 `...`。
 4. 选择 `Install from VSIX...`，选中 `.vsix` 文件。
@@ -46,7 +46,7 @@ Windows 7 只能使用 VS Code 1.70.x，建议固定安装 VS Code 1.70.3。
 也可以使用命令行：
 
 ```bat
-code --install-extension win7-agent-vscode-0.3.0.vsix
+code --install-extension win7-agent-vscode-0.4.0.vsix
 ```
 
 在 VS Code 设置 JSON 中填写：
@@ -65,7 +65,82 @@ code --install-extension win7-agent-vscode-0.3.0.vsix
 Win7 Agent: Open Chat
 ```
 
-VS Code 插件版支持聊天、模型切换、skills、记忆、文本文件、网页读取、命令执行和办公文档起草；对于 `docx/xlsx`，插件会调用随 VSIX 打包的 `agent.exe` 完成完整读写。
+VS Code 插件版支持聊天、模型切换、skills、记忆、当前项目读取、引用文件、引用 skill、文本文件、网页读取、命令执行、项目文件修改、回退修改和办公文档起草；对于 `docx/xlsx`，插件会调用随 VSIX 打包的 `agent.exe` 完成完整读写。
+
+### VS Code 项目能力
+
+聊天窗口按钮：
+
+| 按钮 | 说明 |
+| --- | --- |
+| `Project` | 读取当前 VS Code 打开的项目，把项目下的文本文件加入上下文 |
+| `Ref File` | 选择并引用某个项目文件，会在输入框插入 `@file:路径` |
+| `Skill` | 选择并引用某个 skill，会在输入框插入 `@skill:名称` |
+| `Work` | 开启连续工作模式，再发送任务 |
+| `New` | 新建会话，当前会话自动保存在历史会话中 |
+| `Sessions` | 切换历史会话 |
+| `Rename` | 修改当前会话标题 |
+| `Delete` | 删除某个历史会话 |
+| `Rollback` | 回退上一次由插件应用的项目文件修改 |
+
+也可以手写引用：
+
+```text
+请参考 @file:src/app.js 修复这个问题
+请使用 @skill:report 帮我整理项目周报
+```
+
+连续工作模式：
+
+1. 在聊天窗口点击 `Work`，按钮变为 `Work On`。
+2. 输入任务，例如“阅读当前项目并修复配置加载问题”。
+3. 插件会自动把项目上下文交给模型，并在模型给出文件修改计划时应用修改。
+4. 每次应用修改都会保存回退点。
+5. 需要停止时，在聊天输入框内连续按两次 `Esc`。
+
+文件修改格式由模型自动输出，形式如下：
+
+````text
+```agent-files
+{"summary":"修改说明","changes":[{"action":"write","path":"src/app.js","content":"新内容"}]}
+```
+````
+
+支持的文件操作：
+
+- `create`：新增文件，目标已存在时拒绝。
+- `write`：写入完整文件内容。
+- `replace`：在现有文件中精确替换一段文本。
+- `delete`：删除项目内文件。
+
+安全边界：
+
+- 只允许相对当前工作区的路径。
+- `../`、绝对路径、盘符路径会被拒绝。
+- 默认跳过 `.git`、`node_modules`、`dist`、`build` 等目录。
+- 默认只读取常见文本文件，跳过二进制和过大的文件。
+- 回退只针对插件应用过的文件修改。
+
+### VS Code 会话管理
+
+插件版支持多会话，每个会话的对话历史和上下文相互隔离。
+
+常用命令：
+
+```text
+Win7 Agent: New Session
+Win7 Agent: Switch Session
+Win7 Agent: Rename Current Session
+Win7 Agent: Delete Session
+```
+
+说明：
+
+- 点击 `New` 会创建一个空白新会话，当前会话会保留在历史会话中。
+- 点击 `Sessions` 可以切换到历史会话。
+- 点击 `Rename` 可以更改当前会话标题。
+- 点击 `Delete` 可以删除指定历史会话及其上下文。
+- `Clear` 只清空当前会话，不影响其他历史会话。
 
 ## 2. 配置说明
 

@@ -58,7 +58,7 @@ Commands in `blocked_prefixes` are refused.
 
 Use this when the Win7 office machine runs VS Code 1.70.x:
 
-1. Install `win7-agent-vscode-0.3.0.vsix` with `Extensions -> ... -> Install from VSIX...`.
+1. Install `win7-agent-vscode-0.4.0.vsix` with `Extensions -> ... -> Install from VSIX...`.
 2. Open VS Code Settings JSON.
 3. Configure:
 
@@ -73,3 +73,14 @@ Use this when the Win7 office machine runs VS Code 1.70.x:
 4. Run `Win7 Agent: Open Chat` from the command palette.
 
 The VSIX includes the same office skills and can reuse the bundled `agent.exe` for `docx/xlsx` document features.
+
+Useful VS Code chat references:
+
+```text
+@file:src/app.js       引用当前项目中的文件
+@skill:report          引用某个 skill
+```
+
+In chat, click `Project` to load the current workspace into context. Click `Work` before sending to let the agent work continuously; press `Esc` twice to stop after the current step. File edits made by the agent save rollback snapshots, and `Win7 Agent: Rollback Last File Change` restores the previous state.
+
+Sessions are isolated. Use `New`, `Sessions`, `Rename`, and `Delete` in the chat toolbar, or the matching command palette commands, to manage historical conversations.

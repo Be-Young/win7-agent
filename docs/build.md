@@ -21,7 +21,7 @@ node scripts/package-vscode-extension.js
 This creates:
 
 ```text
-dist/win7-agent-vscode-0.3.0.vsix
+dist/win7-agent-vscode-0.4.0.vsix
 ```
 
 The VSIX contains:
@@ -33,6 +33,7 @@ The VSIX contains:
 - bundled `config/`
 - Chinese manuals
 - `extension/agent.exe` copied from `dist/agent-win7-x64/agent.exe` when available
+- project context, file edits, rollback snapshots, references, and continuous work mode
 
 The extension targets VS Code `^1.70.0`, because VS Code 1.70.3 is the last Windows 7 release.
 

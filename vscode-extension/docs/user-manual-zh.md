@@ -9,7 +9,7 @@
 
 ## 安装
 
-1. 将 `win7-agent-vscode-0.3.0.vsix` 传入内网电脑。
+1. 将 `win7-agent-vscode-0.4.0.vsix` 传入内网电脑。
 2. 打开 VS Code。
 3. 进入扩展面板，点击右上角 `...`。
 4. 选择 `Install from VSIX...`，选中该 `.vsix` 文件。
@@ -18,7 +18,7 @@
 也可以在命令行安装：
 
 ```bat
-code --install-extension win7-agent-vscode-0.3.0.vsix
+code --install-extension win7-agent-vscode-0.4.0.vsix
 ```
 
 ## 基础配置
@@ -56,10 +56,47 @@ Win7 Agent: Open Chat
 
 - 直接提问。
 - 点击 `File` 把本地文件加入上下文。
+- 点击 `Project` 读取当前 VS Code 打开的项目及项目下的文本文件。
+- 点击 `Ref File` 引用某个项目文件。
+- 点击 `Skill` 引用某个 skill。
+- 点击 `Work` 开启连续工作模式。
+- 点击 `New` 新建会话，当前会话会保存到历史会话。
+- 点击 `Sessions` 切换历史会话。
+- 点击 `Rename` 修改当前会话标题。
+- 点击 `Delete` 删除某个历史会话。
+- 点击 `Rollback` 回退上一次由插件应用的项目文件修改。
 - 点击 `URL` 把内网页面加入上下文。
 - 点击 `Model` 切换模型 profile。
 - 点击 `Clear` 清空当前记忆。
 - 输入 `@skill:report 帮我写周报` 手动指定 skill。
+- 输入 `@file:src/app.js 请解释这个文件` 手动引用文件。
+
+连续工作模式：
+
+1. 点击 `Work`，按钮显示 `Work On`。
+2. 输入一个任务，例如“阅读当前项目，修复配置读取问题，并更新说明文档”。
+3. 插件会把项目上下文交给模型，模型输出 `agent-files` 修改计划时会自动应用。
+4. 每次应用都会保存回退点。
+5. 在输入框中连续按两次 `Esc`，会在当前步骤结束后停止连续工作。
+
+模型修改项目文件时使用如下块：
+
+````text
+```agent-files
+{"summary":"修改说明","changes":[{"action":"write","path":"src/app.js","content":"新内容"}]}
+```
+````
+
+支持 `create`、`write`、`replace`、`delete`。插件只允许当前工作区内的相对路径，并拒绝 `../`、绝对路径和盘符路径。
+
+会话管理：
+
+- 每个会话的对话和上下文相互隔离。
+- `New` 会创建空白新会话，当前会话自动保留到历史。
+- `Sessions` 可以切换历史会话。
+- `Rename` 可以更改当前会话标题。
+- `Delete` 可以删除指定历史会话。
+- `Clear` 只清空当前会话。
 
 ## 模型切换
 

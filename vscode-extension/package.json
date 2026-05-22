@@ -2,7 +2,7 @@
   "name": "win7-agent",
   "displayName": "Win7 Agent",
   "description": "Offline-friendly OpenAI-compatible intranet agent for Windows 7 VS Code 1.70.x.",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "publisher": "win7-agent",
   "license": "UNLICENSED",
   "engines": {
@@ -17,9 +17,17 @@
     "onCommand:win7Agent.askSelection",
     "onCommand:win7Agent.readUrl",
     "onCommand:win7Agent.readFile",
+    "onCommand:win7Agent.readWorkspace",
     "onCommand:win7Agent.draftDocument",
     "onCommand:win7Agent.switchModel",
     "onCommand:win7Agent.runCommand",
+    "onCommand:win7Agent.rollbackLastChange",
+    "onCommand:win7Agent.referenceFile",
+    "onCommand:win7Agent.referenceSkill",
+    "onCommand:win7Agent.newSession",
+    "onCommand:win7Agent.switchSession",
+    "onCommand:win7Agent.deleteSession",
+    "onCommand:win7Agent.renameSession",
     "onCommand:win7Agent.showMemory",
     "onCommand:win7Agent.clearMemory",
     "onCommand:win7Agent.openManual"
@@ -43,6 +51,10 @@
         "title": "Win7 Agent: Read File into Context"
       },
       {
+        "command": "win7Agent.readWorkspace",
+        "title": "Win7 Agent: Read Workspace into Context"
+      },
+      {
         "command": "win7Agent.draftDocument",
         "title": "Win7 Agent: Draft Office Document"
       },
@@ -53,6 +65,34 @@
       {
         "command": "win7Agent.runCommand",
         "title": "Win7 Agent: Run Local Command"
+      },
+      {
+        "command": "win7Agent.rollbackLastChange",
+        "title": "Win7 Agent: Rollback Last File Change"
+      },
+      {
+        "command": "win7Agent.referenceFile",
+        "title": "Win7 Agent: Reference Workspace File"
+      },
+      {
+        "command": "win7Agent.referenceSkill",
+        "title": "Win7 Agent: Reference Skill"
+      },
+      {
+        "command": "win7Agent.newSession",
+        "title": "Win7 Agent: New Session"
+      },
+      {
+        "command": "win7Agent.switchSession",
+        "title": "Win7 Agent: Switch Session"
+      },
+      {
+        "command": "win7Agent.deleteSession",
+        "title": "Win7 Agent: Delete Session"
+      },
+      {
+        "command": "win7Agent.renameSession",
+        "title": "Win7 Agent: Rename Current Session"
       },
       {
         "command": "win7Agent.showMemory",
@@ -89,6 +129,9 @@
           "command": "win7Agent.readFile"
         },
         {
+          "command": "win7Agent.readWorkspace"
+        },
+        {
           "command": "win7Agent.draftDocument"
         },
         {
@@ -96,6 +139,27 @@
         },
         {
           "command": "win7Agent.runCommand"
+        },
+        {
+          "command": "win7Agent.rollbackLastChange"
+        },
+        {
+          "command": "win7Agent.referenceFile"
+        },
+        {
+          "command": "win7Agent.referenceSkill"
+        },
+        {
+          "command": "win7Agent.newSession"
+        },
+        {
+          "command": "win7Agent.switchSession"
+        },
+        {
+          "command": "win7Agent.deleteSession"
+        },
+        {
+          "command": "win7Agent.renameSession"
         },
         {
           "command": "win7Agent.showMemory"
@@ -251,6 +315,92 @@
           "type": "number",
           "default": 65536,
           "description": "Maximum captured command output."
+        },
+        "win7Agent.workspace.maxFiles": {
+          "type": "number",
+          "default": 300,
+          "description": "Maximum number of workspace text files loaded into project context."
+        },
+        "win7Agent.workspace.maxFileBytes": {
+          "type": "number",
+          "default": 200000,
+          "description": "Maximum size per workspace text file."
+        },
+        "win7Agent.workspace.maxContextChars": {
+          "type": "number",
+          "default": 180000,
+          "description": "Maximum characters used for workspace project context."
+        },
+        "win7Agent.workspace.excludeDirs": {
+          "type": "array",
+          "default": [
+            ".git",
+            ".svn",
+            ".hg",
+            ".vscode",
+            "node_modules",
+            "dist",
+            "build",
+            "out",
+            "bin",
+            "obj",
+            "vendor",
+            "target",
+            ".idea",
+            ".vs",
+            "__pycache__"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "Workspace directories skipped when building project context."
+        },
+        "win7Agent.workspace.textExtensions": {
+          "type": "array",
+          "default": [
+            ".bat",
+            ".cmd",
+            ".conf",
+            ".css",
+            ".csv",
+            ".go",
+            ".html",
+            ".ini",
+            ".java",
+            ".js",
+            ".json",
+            ".jsx",
+            ".log",
+            ".md",
+            ".py",
+            ".sh",
+            ".sql",
+            ".ts",
+            ".tsx",
+            ".txt",
+            ".xml",
+            ".yaml",
+            ".yml"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "File extensions treated as readable workspace text files."
+        },
+        "win7Agent.workspace.includeInWorkMode": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically include workspace project context when using continuous work mode."
+        },
+        "win7Agent.work.maxTurns": {
+          "type": "number",
+          "default": 8,
+          "description": "Maximum model/tool turns in continuous work mode."
+        },
+        "win7Agent.work.autoApplyFileChanges": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically apply model-proposed agent-files changes during continuous work mode. Rollback snapshots are always saved."
         }
       }
     }

@@ -9,6 +9,7 @@ const childProcess = require('child_process');
 const core = require('./lib/core');
 
 let output;
+const panelStates = new WeakMap();
 
 function activate(context) {
   output = vscode.window.createOutputChannel('Win7 Agent');
@@ -18,9 +19,17 @@ function activate(context) {
   register(context, 'win7Agent.askSelection', askSelection);
   register(context, 'win7Agent.readUrl', readUrlIntoContext);
   register(context, 'win7Agent.readFile', readFileIntoContext);
+  register(context, 'win7Agent.readWorkspace', readWorkspaceIntoContext);
   register(context, 'win7Agent.draftDocument', draftDocument);
   register(context, 'win7Agent.switchModel', switchModel);
   register(context, 'win7Agent.runCommand', runCommandFromInput);
+  register(context, 'win7Agent.rollbackLastChange', rollbackLastChange);
+  register(context, 'win7Agent.referenceFile', referenceFileCommand);
+  register(context, 'win7Agent.referenceSkill', referenceSkillCommand);
+  register(context, 'win7Agent.newSession', newSessionCommand);
+  register(context, 'win7Agent.switchSession', switchSessionCommand);
+  register(context, 'win7Agent.deleteSession', deleteSessionCommand);
+  register(context, 'win7Agent.renameSession', renameSessionCommand);
   register(context, 'win7Agent.showMemory', showMemory);
   register(context, 'win7Agent.clearMemory', clearMemoryCommand);
   register(context, 'win7Agent.openManual', openManual);
@@ -74,6 +83,18 @@ function getSettings() {
       enabled: cfg.get('memory.enabled') !== false,
       maxMessages: cfg.get('memory.maxMessages') || 40,
       maxContextItems: cfg.get('memory.maxContextItems') || 12
+    },
+    workspace: {
+      maxFiles: cfg.get('workspace.maxFiles') || 300,
+      maxFileBytes: cfg.get('workspace.maxFileBytes') || 200000,
+      maxContextChars: cfg.get('workspace.maxContextChars') || 180000,
+      excludeDirs: cfg.get('workspace.excludeDirs') || undefined,
+      textExtensions: cfg.get('workspace.textExtensions') || undefined,
+      includeInWorkMode: cfg.get('workspace.includeInWorkMode') !== false
+    },
+    work: {
+      maxTurns: cfg.get('work.maxTurns') || 8,
+      autoApplyFileChanges: cfg.get('work.autoApplyFileChanges') !== false
     }
   };
   const resolved = core.resolveModel(settings);
@@ -95,7 +116,15 @@ async function openChat(context) {
     { enableScripts: true, retainContextWhenHidden: true }
   );
   panel.webview.html = chatHtml(panel.webview);
-  panel.webview.onDidReceiveMessage((message) => handlePanelMessage(context, panel, message), undefined, context.subscriptions);
+  panelStates.set(panel, { working: false, stopRequested: false, esc: {} });
+  panel.webview.onDidReceiveMessage((message) => {
+    handlePanelMessage(context, panel, message).catch((err) => {
+      const msg = err && err.message ? err.message : String(err);
+      output.appendLine('[error] ' + msg);
+      panel.webview.postMessage({ type: 'notice', text: 'Error: ' + msg });
+      vscode.window.showErrorMessage(msg);
+    });
+  }, undefined, context.subscriptions);
 }
 
 async function handlePanelMessage(context, panel, message) {
@@ -107,7 +136,11 @@ async function handlePanelMessage(context, panel, message) {
     return;
   }
   if (message.type === 'send') {
-    await sendPanelMessage(context, panel, message.text || '');
+    if (message.work) {
+      await sendWorkMessage(context, panel, message.text || '');
+    } else {
+      await sendPanelMessage(context, panel, message.text || '');
+    }
     return;
   }
   if (message.type === 'file') {
@@ -116,6 +149,53 @@ async function handlePanelMessage(context, panel, message) {
   }
   if (message.type === 'url') {
     await panelLoadUrl(context, panel);
+    return;
+  }
+  if (message.type === 'workspace') {
+    await panelLoadWorkspace(context, panel);
+    return;
+  }
+  if (message.type === 'refFile') {
+    await panelReferenceFile(context, panel);
+    return;
+  }
+  if (message.type === 'refSkill') {
+    await panelReferenceSkill(context, panel);
+    return;
+  }
+  if (message.type === 'rollback') {
+    await rollbackLastChange(context);
+    await postPanelState(context, panel);
+    return;
+  }
+  if (message.type === 'newSession') {
+    await newSessionCommand(context);
+    panel.webview.postMessage({ type: 'notice', text: 'New session created.' });
+    await postPanelState(context, panel);
+    return;
+  }
+  if (message.type === 'switchSession') {
+    await switchSessionCommand(context);
+    await postPanelState(context, panel);
+    return;
+  }
+  if (message.type === 'renameSession') {
+    await renameSessionCommand(context);
+    await postPanelState(context, panel);
+    return;
+  }
+  if (message.type === 'deleteSession') {
+    await deleteSessionCommand(context);
+    await postPanelState(context, panel);
+    return;
+  }
+  if (message.type === 'esc') {
+    const state = getPanelState(panel);
+    state.esc = core.recordEscPress(state.esc, Date.now());
+    if (state.esc.stop && state.working) {
+      state.stopRequested = true;
+      panel.webview.postMessage({ type: 'notice', text: 'Stop requested. Continuous work will stop after the current step.' });
+    }
     return;
   }
   if (message.type === 'model') {
@@ -133,13 +213,17 @@ async function handlePanelMessage(context, panel, message) {
 async function postPanelState(context, panel) {
   const settings = getSettings();
   const memory = await loadMemory(context);
+  const session = activeSessionMeta(context);
   panel.webview.postMessage({
     type: 'state',
     model: settings.model,
     profile: settings.profileName,
+    sessionId: session.id,
+    sessionTitle: session.title,
     messages: memory.messages.length,
     contextItems: memory.context.length,
-    stream: settings.stream
+    stream: settings.stream,
+    working: getPanelState(panel).working
   });
 }
 
@@ -148,11 +232,16 @@ async function sendPanelMessage(context, panel, text) {
   if (!userText) {
     return;
   }
+  const state = getPanelState(panel);
+  if (state.working) {
+    panel.webview.postMessage({ type: 'notice', text: 'Continuous work is running. Press Esc twice to stop it first.' });
+    return;
+  }
   const settings = getSettings();
   const memory = await loadMemory(context);
   const skills = loadSkills(context, settings);
-  const explicit = explicitSkillNames(userText);
-  const messages = core.buildChatMessages(settings, memory, skills, userText, explicit);
+  const prepared = await prepareMemoryForMessage(context, memory, settings, skills, userText);
+  const messages = core.buildChatMessages(settings, prepared.memory, skills, userText, prepared.explicitSkills);
   panel.webview.postMessage({ type: 'append', role: 'user', text: userText });
   panel.webview.postMessage({ type: 'assistantStart' });
   const answer = await chatCompletion(settings, messages, (delta) => {
@@ -165,13 +254,75 @@ async function sendPanelMessage(context, panel, text) {
   await saveMemory(context, core.trimMemory(memory, settings.memory.maxMessages, settings.memory.maxContextItems));
   await postPanelState(context, panel);
 
-  const action = extractAgentAction(answer);
-  if (action && action.action === 'run_command' && action.command) {
-    const commandText = String(action.command);
-    const ok = await vscode.window.showInformationMessage('模型请求执行命令：' + commandText, { modal: true }, '运行', '取消');
-    if (ok === '运行') {
-      await runLocalCommand(context, commandText, true);
+  await handleAssistantActions(context, panel, answer, { autoApplyFileChanges: false });
+}
+
+async function sendWorkMessage(context, panel, text) {
+  const userText = String(text || '').trim();
+  if (!userText) {
+    return;
+  }
+  const state = getPanelState(panel);
+  if (state.working) {
+    panel.webview.postMessage({ type: 'notice', text: 'Continuous work is already running. Press Esc twice to stop.' });
+    return;
+  }
+  state.working = true;
+  state.stopRequested = false;
+  state.esc = {};
+  await postPanelState(context, panel);
+  const settings = getSettings();
+  const skills = loadSkills(context, settings);
+  const memory = await loadMemory(context);
+  const workMemory = {
+    messages: memory.messages.slice(),
+    context: memory.context.slice()
+  };
+  const prepared = await prepareMemoryForMessage(context, workMemory, settings, skills, userText);
+  if (settings.workspace.includeInWorkMode && workspaceRoot()) {
+    const workspaceContext = await buildWorkspaceContextFromDisk(settings);
+    prepared.memory.context.push({ kind: 'workspace', source: workspaceRoot(), content: workspaceContext });
+  }
+  const workPrompt = [
+    userText,
+    '',
+    'Continuous work mode is enabled. Work step by step until the task is complete.',
+    'When you need to edit files, output an agent-files block. When the task is complete, answer without agent-files or agent-action blocks.'
+  ].join('\n');
+  let messages = core.buildChatMessages(settings, prepared.memory, skills, workPrompt, prepared.explicitSkills);
+  panel.webview.postMessage({ type: 'append', role: 'user', text: userText + '\n\n[continuous work mode]' });
+  try {
+    for (let turn = 1; turn <= settings.work.maxTurns; turn += 1) {
+      if (state.stopRequested) {
+        panel.webview.postMessage({ type: 'notice', text: 'Continuous work stopped.' });
+        break;
+      }
+      panel.webview.postMessage({ type: 'notice', text: 'Work step ' + turn + ' / ' + settings.work.maxTurns });
+      panel.webview.postMessage({ type: 'assistantStart' });
+      const answer = await chatCompletion(settings, messages, (delta) => {
+        panel.webview.postMessage({ type: 'assistantDelta', text: delta });
+      });
+      panel.webview.postMessage({ type: 'assistantDone', text: answer });
+      memory.messages.push({ role: 'user', content: turn === 1 ? userText : '[continuous work step ' + turn + ']' });
+      memory.messages.push({ role: 'assistant', content: answer });
+      await saveMemory(context, core.trimMemory(memory, settings.memory.maxMessages, settings.memory.maxContextItems));
+
+      const results = await handleAssistantActions(context, panel, answer, {
+        autoApplyFileChanges: settings.work.autoApplyFileChanges,
+        collectResults: true
+      });
+      if (results.length === 0) {
+        break;
+      }
+      messages = messages.concat([
+        { role: 'assistant', content: answer },
+        { role: 'user', content: 'Tool results:\n' + results.join('\n\n') + '\n\nContinue working. If the task is complete, provide a concise final summary without tool blocks.' }
+      ]);
     }
+  } finally {
+    state.working = false;
+    state.stopRequested = false;
+    await postPanelState(context, panel);
   }
 }
 
@@ -199,6 +350,93 @@ async function panelLoadUrl(context, panel) {
   await postPanelState(context, panel);
 }
 
+async function panelLoadWorkspace(context, panel) {
+  const settings = getSettings();
+  const workspaceContext = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Reading workspace files...' }, () => {
+    return buildWorkspaceContextFromDisk(settings);
+  });
+  await addContextItem(context, 'workspace', workspaceRoot(), workspaceContext);
+  panel.webview.postMessage({ type: 'notice', text: 'Loaded workspace into context.' });
+  await postPanelState(context, panel);
+}
+
+async function panelReferenceFile(context, panel) {
+  const picked = await pickWorkspaceFile(getSettings());
+  if (!picked) {
+    return;
+  }
+  panel.webview.postMessage({ type: 'insertText', text: '@file:' + picked + ' ' });
+}
+
+async function panelReferenceSkill(context, panel) {
+  const picked = await pickSkill(context, getSettings());
+  if (!picked) {
+    return;
+  }
+  panel.webview.postMessage({ type: 'insertText', text: '@skill:' + picked + ' ' });
+}
+
+function getPanelState(panel) {
+  let state = panelStates.get(panel);
+  if (!state) {
+    state = { working: false, stopRequested: false, esc: {} };
+    panelStates.set(panel, state);
+  }
+  return state;
+}
+
+async function prepareMemoryForMessage(context, memory, settings, skills, userText) {
+  const refs = core.parseReferences(userText);
+  const prepared = {
+    messages: memory.messages.slice(),
+    context: memory.context.slice()
+  };
+  for (let i = 0; i < refs.files.length; i += 1) {
+    const rel = refs.files[i];
+    const absolute = safeWorkspacePath(rel);
+    const content = await readLocalFile(context, absolute, settings);
+    prepared.context.push({ kind: 'file-ref', source: rel, content: content });
+  }
+  const explicit = uniqueStrings(explicitSkillNames(userText).concat(refs.skills));
+  return { memory: prepared, explicitSkills: explicit };
+}
+
+async function handleAssistantActions(context, panel, answer, options) {
+  const opts = options || {};
+  const results = [];
+  let plan = null;
+  try {
+    plan = core.extractFileChangePlan(answer);
+  } catch (err) {
+    panel.webview.postMessage({ type: 'notice', text: 'Invalid file change plan: ' + err.message });
+  }
+  if (plan) {
+    let shouldApply = opts.autoApplyFileChanges === true;
+    if (!shouldApply) {
+      const confirm = await vscode.window.showInformationMessage('模型提出修改 ' + plan.changes.length + ' 个项目文件：' + (plan.summary || ''), { modal: true }, '应用并保存回退点', '取消');
+      shouldApply = confirm === '应用并保存回退点';
+    }
+    if (shouldApply) {
+      const result = await applyFileChangePlan(context, plan);
+      panel.webview.postMessage({ type: 'notice', text: result.summary });
+      results.push(result.summary);
+    }
+  }
+
+  const action = extractAgentAction(answer);
+  if (action && action.action === 'run_command' && action.command) {
+    const commandText = String(action.command);
+    const ok = opts.autoApplyFileChanges
+      ? '运行'
+      : await vscode.window.showInformationMessage('模型请求执行命令：' + commandText, { modal: true }, '运行', '取消');
+    if (ok === '运行') {
+      const commandResult = await runLocalCommand(context, commandText, true);
+      results.push('Command executed: ' + commandText + '\n' + limit(commandResult.stdout || commandResult.stderr || '', 4000));
+    }
+  }
+  return opts.collectResults ? results : [];
+}
+
 async function askSelection(context) {
   const editor = vscode.window.activeTextEditor;
   const selection = editor && !editor.selection.isEmpty ? editor.document.getText(editor.selection) : '';
@@ -219,7 +457,8 @@ async function askSelection(context) {
     oneShotMemory.context.push({ kind: 'selection', source: editor.document.fileName || 'active editor', content: limit(selection, settings.maxContentChars) });
   }
   const skills = loadSkills(context, settings);
-  const messages = core.buildChatMessages(settings, oneShotMemory, skills, question, explicitSkillNames(question));
+  const prepared = await prepareMemoryForMessage(context, oneShotMemory, settings, skills, question);
+  const messages = core.buildChatMessages(settings, prepared.memory, skills, question, prepared.explicitSkills);
   const answer = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Win7 Agent is thinking...' }, () => chatCompletion(settings, messages));
   memory.messages.push({ role: 'user', content: question });
   memory.messages.push({ role: 'assistant', content: answer });
@@ -249,6 +488,36 @@ async function readFileIntoContext(context) {
   const content = await readLocalFile(context, uris[0].fsPath, settings);
   await addContextItem(context, 'file', uris[0].fsPath, content);
   vscode.window.showInformationMessage('文件已加入上下文记忆。');
+}
+
+async function readWorkspaceIntoContext(context) {
+  const settings = getSettings();
+  const workspaceContext = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Reading workspace files...' }, () => {
+    return buildWorkspaceContextFromDisk(settings);
+  });
+  await addContextItem(context, 'workspace', workspaceRoot(), workspaceContext);
+  await openMarkdownDocument(workspaceContext);
+  vscode.window.showInformationMessage('当前项目已加入上下文记忆。');
+}
+
+async function referenceFileCommand(context) {
+  const picked = await pickWorkspaceFile(getSettings());
+  if (!picked) {
+    return;
+  }
+  const settings = getSettings();
+  const content = await readLocalFile(context, safeWorkspacePath(picked), settings);
+  await addContextItem(context, 'file-ref', picked, content);
+  vscode.window.showInformationMessage('已引用文件：' + picked);
+}
+
+async function referenceSkillCommand(context) {
+  const picked = await pickSkill(context, getSettings());
+  if (!picked) {
+    return;
+  }
+  await vscode.env.clipboard.writeText('@skill:' + picked);
+  vscode.window.showInformationMessage('已复制 skill 引用：@skill:' + picked);
 }
 
 async function draftDocument(context) {
@@ -356,13 +625,115 @@ async function runLocalCommand(context, command, fromModel) {
   if (!fromModel) {
     vscode.window.showInformationMessage('命令已执行，输出见 Win7 Agent 面板。');
   }
+  return result;
+}
+
+async function rollbackLastChange(context) {
+  const root = workspaceRoot();
+  if (!root) {
+    throw new Error('No workspace folder is open.');
+  }
+  const index = loadChangeIndex(context);
+  if (index.length === 0) {
+    vscode.window.showInformationMessage('没有可回退的 Win7 Agent 文件变更。');
+    return;
+  }
+  const item = index[index.length - 1];
+  const snapshot = loadChangeSnapshot(context, item.id);
+  const files = (snapshot.files || []).slice().reverse();
+  files.forEach((file) => {
+    const target = safeWorkspacePath(file.path);
+    if (file.originalExists) {
+      ensureDir(path.dirname(target));
+      fs.writeFileSync(target, file.originalContent || '', 'utf8');
+    } else if (fs.existsSync(target)) {
+      fs.unlinkSync(target);
+    }
+  });
+  index.pop();
+  saveChangeIndex(context, index);
+  vscode.window.showInformationMessage('已回退变更：' + item.id);
+}
+
+async function newSessionCommand(context) {
+  const title = await vscode.window.showInputBox({ prompt: '新会话标题', value: 'New Session' });
+  if (title === undefined) {
+    return;
+  }
+  const index = loadSessionIndex(context);
+  const id = sessionId();
+  const now = new Date().toISOString();
+  saveSessionIndex(context, core.addSession(index, id, title || 'New Session', now));
+  saveSessionData(context, id, { messages: [], context: [] });
+  vscode.window.showInformationMessage('已新建会话：' + core.cleanSessionTitle(title || 'New Session'));
+}
+
+async function switchSessionCommand(context) {
+  const index = loadSessionIndex(context);
+  const picks = index.sessions.slice().reverse().map((session) => ({
+    label: session.title,
+    description: session.id === index.activeId ? 'current' : session.updatedAt,
+    sessionId: session.id
+  }));
+  const picked = await vscode.window.showQuickPick(picks, { placeHolder: '选择历史会话' });
+  if (!picked) {
+    return;
+  }
+  saveSessionIndex(context, core.setActiveSession(index, picked.sessionId));
+  vscode.window.showInformationMessage('已切换会话：' + picked.label);
+}
+
+async function deleteSessionCommand(context) {
+  const index = loadSessionIndex(context);
+  const picks = index.sessions.slice().reverse().map((session) => ({
+    label: session.title,
+    description: session.id === index.activeId ? 'current' : session.updatedAt,
+    sessionId: session.id
+  }));
+  const picked = await vscode.window.showQuickPick(picks, { placeHolder: '选择要删除的历史会话' });
+  if (!picked) {
+    return;
+  }
+  const confirmed = await vscode.window.showWarningMessage('删除会话及其上下文：' + picked.label, { modal: true }, '删除', '取消');
+  if (confirmed !== '删除') {
+    return;
+  }
+  let next = core.deleteSession(index, picked.sessionId);
+  const dataPath = sessionDataPath(context, picked.sessionId);
+  if (fs.existsSync(dataPath)) {
+    fs.unlinkSync(dataPath);
+  }
+  if (next.sessions.length === 0) {
+    const id = sessionId();
+    const now = new Date().toISOString();
+    next = core.addSession(next, id, 'New Session', now);
+    saveSessionData(context, id, { messages: [], context: [] });
+  }
+  saveSessionIndex(context, next);
+  vscode.window.showInformationMessage('已删除会话：' + picked.label);
+}
+
+async function renameSessionCommand(context) {
+  const index = loadSessionIndex(context);
+  const current = index.sessions.find((item) => item.id === index.activeId);
+  if (!current) {
+    return;
+  }
+  const title = await vscode.window.showInputBox({ prompt: '修改当前会话标题', value: current.title });
+  if (title === undefined) {
+    return;
+  }
+  saveSessionIndex(context, core.renameSession(index, current.id, title));
+  vscode.window.showInformationMessage('已修改会话标题：' + core.cleanSessionTitle(title));
 }
 
 async function showMemory(context) {
   const memory = await loadMemory(context);
+  const session = activeSessionMeta(context);
   const lines = [
     '# Win7 Agent Memory',
     '',
+    '- Session: ' + session.title,
     '- Messages: ' + memory.messages.length,
     '- Context items: ' + memory.context.length,
     ''
@@ -394,6 +765,197 @@ async function openManual(context) {
     }
   }
   await openMarkdownDocument('# Win7 Agent VS Code 使用手册\n\n未找到随包手册文件。');
+}
+
+async function buildWorkspaceContextFromDisk(settings) {
+  const files = scanWorkspaceFiles(settings);
+  return core.buildWorkspaceContext(files, { maxChars: settings.workspace.maxContextChars || settings.maxContentChars });
+}
+
+function scanWorkspaceFiles(settings) {
+  const root = workspaceRoot();
+  if (!root) {
+    throw new Error('No workspace folder is open.');
+  }
+  const opts = {
+    excludeDirs: settings.workspace.excludeDirs,
+    textExtensions: settings.workspace.textExtensions,
+    maxFileBytes: settings.workspace.maxFileBytes
+  };
+  const files = [];
+  scanDir(root, root, opts, settings.workspace.maxFiles || 300, files);
+  return files;
+}
+
+function scanDir(root, dir, opts, maxFiles, out) {
+  if (out.length >= maxFiles) {
+    return;
+  }
+  let entries;
+  try {
+    entries = fs.readdirSync(dir);
+  } catch (err) {
+    return;
+  }
+  entries.sort().forEach((entry) => {
+    if (out.length >= maxFiles) {
+      return;
+    }
+    const full = path.join(dir, entry);
+    let stat;
+    try {
+      stat = fs.statSync(full);
+    } catch (err) {
+      return;
+    }
+    const rel = path.relative(root, full).replace(/\\/g, '/');
+    if (stat.isDirectory()) {
+      if (core.shouldIncludeWorkspaceFile(rel + '/placeholder.md', 0, opts)) {
+        scanDir(root, full, opts, maxFiles, out);
+      }
+      return;
+    }
+    if (!stat.isFile() || !core.shouldIncludeWorkspaceFile(rel, stat.size, opts)) {
+      return;
+    }
+    let content;
+    try {
+      content = fs.readFileSync(full, 'utf8');
+    } catch (err) {
+      return;
+    }
+    if (content.indexOf('\u0000') >= 0) {
+      return;
+    }
+    out.push({ path: rel, content: content, bytes: stat.size, truncated: false });
+  });
+}
+
+async function pickWorkspaceFile(settings) {
+  const files = scanWorkspaceFiles(settings).map((file) => file.path);
+  if (files.length === 0) {
+    vscode.window.showInformationMessage('当前项目里没有可引用的文本文件。');
+    return '';
+  }
+  return vscode.window.showQuickPick(files, { placeHolder: '选择要引用的项目文件' });
+}
+
+async function pickSkill(context, settings) {
+  const skills = loadSkills(context, settings);
+  if (skills.length === 0) {
+    vscode.window.showInformationMessage('没有找到可用 skill。');
+    return '';
+  }
+  const picks = skills.map((skill) => ({ label: skill.name, description: skill.description }));
+  const picked = await vscode.window.showQuickPick(picks, { placeHolder: '选择要引用的 skill' });
+  return picked ? picked.label : '';
+}
+
+async function applyFileChangePlan(context, plan) {
+  const root = workspaceRoot();
+  if (!root) {
+    throw new Error('No workspace folder is open.');
+  }
+  const originals = {};
+  plan.changes.forEach((change) => {
+    const rel = core.normalizeWorkspacePath(change.path);
+    const target = safeWorkspacePath(rel);
+    originals[rel] = {
+      exists: fs.existsSync(target),
+      content: fs.existsSync(target) ? fs.readFileSync(target, 'utf8') : ''
+    };
+  });
+  const id = changeId();
+  const snapshot = core.buildRollbackSnapshot(id, plan.changes, originals);
+  plan.changes.forEach((change) => {
+    const rel = core.normalizeWorkspacePath(change.path);
+    const target = safeWorkspacePath(rel);
+    const exists = fs.existsSync(target);
+    if (change.action === 'create' && exists) {
+      throw new Error('Refusing to create over existing file: ' + rel);
+    }
+    if ((change.action === 'replace' || change.action === 'delete') && !exists) {
+      throw new Error('File does not exist: ' + rel);
+    }
+    if (change.action === 'replace') {
+      core.applyTextChange(fs.readFileSync(target, 'utf8'), change);
+    }
+  });
+  saveChangeSnapshot(context, snapshot, plan.summary || '');
+  plan.changes.forEach((change) => {
+    const rel = core.normalizeWorkspacePath(change.path);
+    const target = safeWorkspacePath(rel);
+    const exists = fs.existsSync(target);
+    const current = exists ? fs.readFileSync(target, 'utf8') : '';
+    const next = core.applyTextChange(current, change);
+    if (next === null) {
+      fs.unlinkSync(target);
+    } else {
+      ensureDir(path.dirname(target));
+      fs.writeFileSync(target, next, 'utf8');
+    }
+  });
+  return {
+    id: id,
+    summary: 'Applied ' + plan.changes.length + ' file change(s). Rollback id: ' + id
+  };
+}
+
+function safeWorkspacePath(relativePath) {
+  const root = workspaceRoot();
+  if (!root) {
+    throw new Error('No workspace folder is open.');
+  }
+  const rel = core.normalizeWorkspacePath(relativePath);
+  const target = path.resolve(root, rel);
+  const rootResolved = path.resolve(root);
+  const prefix = rootResolved.endsWith(path.sep) ? rootResolved : rootResolved + path.sep;
+  if (target !== rootResolved && target.indexOf(prefix) !== 0) {
+    throw new Error('path outside workspace is not allowed: ' + relativePath);
+  }
+  return target;
+}
+
+function changeId() {
+  return new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 14) + '-' + Math.random().toString(16).slice(2, 8);
+}
+
+function saveChangeSnapshot(context, snapshot, summary) {
+  ensureDir(changeDir(context));
+  fs.writeFileSync(changeSnapshotPath(context, snapshot.id), JSON.stringify(snapshot, null, 2), 'utf8');
+  const index = loadChangeIndex(context);
+  index.push({ id: snapshot.id, summary: summary || '', createdAt: snapshot.createdAt });
+  saveChangeIndex(context, index);
+}
+
+function loadChangeSnapshot(context, id) {
+  return JSON.parse(fs.readFileSync(changeSnapshotPath(context, id), 'utf8'));
+}
+
+function loadChangeIndex(context) {
+  try {
+    const data = JSON.parse(fs.readFileSync(changeIndexPath(context), 'utf8'));
+    return Array.isArray(data) ? data : [];
+  } catch (err) {
+    return [];
+  }
+}
+
+function saveChangeIndex(context, index) {
+  ensureDir(changeDir(context));
+  fs.writeFileSync(changeIndexPath(context), JSON.stringify(index, null, 2), 'utf8');
+}
+
+function changeDir(context) {
+  return path.join(context.globalStorageUri.fsPath, 'changes');
+}
+
+function changeIndexPath(context) {
+  return path.join(changeDir(context), 'index.json');
+}
+
+function changeSnapshotPath(context, id) {
+  return path.join(changeDir(context), id + '.json');
 }
 
 function loadSkills(context, settings) {
@@ -458,6 +1020,20 @@ function walk(dir, out) {
 
 async function readLocalFile(context, filePath, settings) {
   const ext = path.extname(filePath).toLowerCase();
+  const root = workspaceRoot();
+  if (root) {
+    const rel = path.relative(root, filePath).replace(/\\/g, '/');
+    if (rel && rel.indexOf('..') !== 0 && !path.isAbsolute(rel)) {
+      const stat = fs.statSync(filePath);
+      if (core.shouldIncludeWorkspaceFile(rel, stat.size, {
+        excludeDirs: settings.workspace.excludeDirs,
+        textExtensions: settings.workspace.textExtensions,
+        maxFileBytes: settings.workspace.maxFileBytes
+      })) {
+        return limit(fs.readFileSync(filePath, 'utf8'), settings.maxContentChars);
+      }
+    }
+  }
   if (['.txt', '.md', '.csv', '.json', '.log'].indexOf(ext) >= 0) {
     return limit(fs.readFileSync(filePath, 'utf8'), settings.maxContentChars);
   }
@@ -471,7 +1047,7 @@ async function readLocalFile(context, filePath, settings) {
 function readUrl(rawUrl, settings) {
   return new Promise((resolve, reject) => {
     const endpoint = new URL(rawUrl);
-    const headers = Object.assign({ 'User-Agent': 'win7-agent-vscode/0.3.0' }, settings.headers || {});
+    const headers = Object.assign({ 'User-Agent': 'win7-agent-vscode/0.4.0' }, settings.headers || {});
     applyAuthProfiles(rawUrl, settings.authProfiles || {}, headers);
     const client = endpoint.protocol === 'https:' ? https : http;
     const req = client.request(endpoint, tlsOptions(settings, {
@@ -651,7 +1227,8 @@ async function loadMemory(context) {
   if (!settings.memory.enabled) {
     return { messages: [], context: [] };
   }
-  const file = memoryPath(context);
+  const session = activeSessionMeta(context);
+  const file = sessionDataPath(context, session.id);
   try {
     const data = JSON.parse(fs.readFileSync(file, 'utf8'));
     return core.trimMemory(data, settings.memory.maxMessages, settings.memory.maxContextItems);
@@ -665,13 +1242,29 @@ async function saveMemory(context, memory) {
   if (!settings.memory.enabled) {
     return;
   }
-  ensureDir(path.dirname(memoryPath(context)));
-  fs.writeFileSync(memoryPath(context), JSON.stringify(memory, null, 2), 'utf8');
+  const index = loadSessionIndex(context);
+  const active = index.activeId;
+  saveSessionData(context, active, memory);
+  index.sessions = index.sessions.map((session) => {
+    if (session.id !== active) {
+      return session;
+    }
+    const copy = Object.assign({}, session);
+    copy.updatedAt = new Date().toISOString();
+    if (copy.title === 'New Session') {
+      const firstUser = (memory.messages || []).find((item) => item.role === 'user' && item.content);
+      if (firstUser) {
+        copy.title = core.cleanSessionTitle(firstUser.content);
+      }
+    }
+    return copy;
+  });
+  saveSessionIndex(context, index);
 }
 
 async function clearMemory(context) {
-  ensureDir(path.dirname(memoryPath(context)));
-  fs.writeFileSync(memoryPath(context), JSON.stringify({ messages: [], context: [] }, null, 2), 'utf8');
+  const session = activeSessionMeta(context);
+  saveSessionData(context, session.id, { messages: [], context: [] });
 }
 
 async function addContextItem(context, kind, source, content) {
@@ -686,8 +1279,76 @@ async function addContextItem(context, kind, source, content) {
   await saveMemory(context, core.trimMemory(memory, settings.memory.maxMessages, settings.memory.maxContextItems));
 }
 
-function memoryPath(context) {
+function legacyMemoryPath(context) {
   return path.join(context.globalStorageUri.fsPath, 'memory', 'default.json');
+}
+
+function activeSessionMeta(context) {
+  const index = loadSessionIndex(context);
+  const active = index.sessions.find((item) => item.id === index.activeId);
+  return active || index.sessions[0];
+}
+
+function loadSessionIndex(context) {
+  ensureDir(sessionDir(context));
+  let raw = null;
+  try {
+    raw = JSON.parse(fs.readFileSync(sessionIndexPath(context), 'utf8'));
+  } catch (err) {
+    raw = null;
+  }
+  if (raw) {
+    const index = core.ensureSessionIndex(raw, sessionId(), 'New Session', new Date().toISOString());
+    if (!raw.activeId || !raw.sessions) {
+      saveSessionIndex(context, index);
+    }
+    return index;
+  }
+  const id = sessionId();
+  const now = new Date().toISOString();
+  const index = core.ensureSessionIndex(null, id, 'New Session', now);
+  const legacy = loadLegacyMemory(context);
+  saveSessionData(context, id, legacy);
+  saveSessionIndex(context, index);
+  return index;
+}
+
+function saveSessionIndex(context, index) {
+  ensureDir(sessionDir(context));
+  fs.writeFileSync(sessionIndexPath(context), JSON.stringify(index, null, 2), 'utf8');
+}
+
+function loadLegacyMemory(context) {
+  try {
+    const data = JSON.parse(fs.readFileSync(legacyMemoryPath(context), 'utf8'));
+    return {
+      messages: Array.isArray(data.messages) ? data.messages : [],
+      context: Array.isArray(data.context) ? data.context : []
+    };
+  } catch (err) {
+    return { messages: [], context: [] };
+  }
+}
+
+function saveSessionData(context, id, data) {
+  ensureDir(sessionDir(context));
+  fs.writeFileSync(sessionDataPath(context, id), JSON.stringify(data || { messages: [], context: [] }, null, 2), 'utf8');
+}
+
+function sessionDir(context) {
+  return path.join(context.globalStorageUri.fsPath, 'sessions');
+}
+
+function sessionIndexPath(context) {
+  return path.join(sessionDir(context), 'index.json');
+}
+
+function sessionDataPath(context, id) {
+  return path.join(sessionDir(context), id + '.json');
+}
+
+function sessionId() {
+  return 's-' + new Date().toISOString().replace(/[^0-9]/g, '').slice(0, 14) + '-' + Math.random().toString(16).slice(2, 8);
 }
 
 function findAgentExe(context, settings) {
@@ -823,8 +1484,22 @@ function extractAgentAction(text) {
 }
 
 function explicitSkillNames(text) {
-  const matches = String(text || '').match(/@skill:([a-zA-Z0-9_-]+)/g) || [];
-  return matches.map((item) => item.slice('@skill:'.length));
+  return core.parseReferences(text).skills;
+}
+
+function uniqueStrings(values) {
+  const seen = {};
+  const out = [];
+  (values || []).forEach((value) => {
+    const text = String(value || '').trim();
+    const key = text.toLowerCase();
+    if (!text || seen[key]) {
+      return;
+    }
+    seen[key] = true;
+    out.push(text);
+  });
+  return out;
 }
 
 function workspaceRoot() {
@@ -864,10 +1539,11 @@ function chatHtml(webview) {
   <style>
     body { margin: 0; font-family: var(--vscode-font-family); color: var(--vscode-foreground); background: var(--vscode-editor-background); }
     .wrap { display: flex; flex-direction: column; height: 100vh; }
-    .bar { display: flex; gap: 8px; align-items: center; padding: 8px 10px; border-bottom: 1px solid var(--vscode-panel-border); background: var(--vscode-sideBar-background); }
+    .bar { display: flex; gap: 6px; align-items: center; padding: 8px 10px; border-bottom: 1px solid var(--vscode-panel-border); background: var(--vscode-sideBar-background); flex-wrap: wrap; }
     .status { flex: 1; opacity: 0.85; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     button { color: var(--vscode-button-foreground); background: var(--vscode-button-background); border: 0; border-radius: 3px; padding: 5px 9px; cursor: pointer; }
     button.secondary { color: var(--vscode-button-secondaryForeground); background: var(--vscode-button-secondaryBackground); }
+    button.active { outline: 1px solid var(--vscode-focusBorder); }
     #messages { flex: 1; overflow-y: auto; padding: 14px; }
     .msg { margin: 0 0 12px; padding: 10px 12px; border-left: 3px solid var(--vscode-focusBorder); background: var(--vscode-editor-inactiveSelectionBackground); white-space: pre-wrap; word-break: break-word; }
     .msg.user { border-left-color: var(--vscode-terminal-ansiGreen); }
@@ -882,13 +1558,22 @@ function chatHtml(webview) {
     <div class="bar">
       <div class="status" id="status">Win7 Agent</div>
       <button class="secondary" id="file">File</button>
+      <button class="secondary" id="project">Project</button>
+      <button class="secondary" id="refFile">Ref File</button>
+      <button class="secondary" id="skill">Skill</button>
       <button class="secondary" id="url">URL</button>
       <button class="secondary" id="model">Model</button>
+      <button class="secondary" id="newSession">New</button>
+      <button class="secondary" id="sessions">Sessions</button>
+      <button class="secondary" id="renameSession">Rename</button>
+      <button class="secondary" id="deleteSession">Delete</button>
+      <button class="secondary" id="rollback">Rollback</button>
       <button class="secondary" id="clear">Clear</button>
     </div>
     <div id="messages"></div>
     <div class="composer">
-      <textarea id="input" placeholder="输入问题。Ctrl+Enter 发送；可用 @skill:report 指定 skill。"></textarea>
+      <textarea id="input" placeholder="输入问题。Ctrl+Enter 发送；可用 @file:src/app.js 引用文件，@skill:report 引用 skill。连续工作时连按两次 Esc 停止。"></textarea>
+      <button class="secondary" id="work">Work</button>
       <button id="send">Send</button>
     </div>
   </div>
@@ -896,7 +1581,9 @@ function chatHtml(webview) {
     const vscode = acquireVsCodeApi();
     const messages = document.getElementById('messages');
     const input = document.getElementById('input');
+    const workButton = document.getElementById('work');
     let streaming = null;
+    let workMode = false;
 
     function append(role, text) {
       const el = document.createElement('div');
@@ -918,25 +1605,40 @@ function chatHtml(webview) {
       const text = input.value.trim();
       if (!text) return;
       input.value = '';
-      vscode.postMessage({ type: 'send', text });
+      vscode.postMessage({ type: 'send', text, work: workMode });
     }
 
     document.getElementById('send').addEventListener('click', send);
     document.getElementById('file').addEventListener('click', () => vscode.postMessage({ type: 'file' }));
+    document.getElementById('project').addEventListener('click', () => vscode.postMessage({ type: 'workspace' }));
+    document.getElementById('refFile').addEventListener('click', () => vscode.postMessage({ type: 'refFile' }));
+    document.getElementById('skill').addEventListener('click', () => vscode.postMessage({ type: 'refSkill' }));
     document.getElementById('url').addEventListener('click', () => vscode.postMessage({ type: 'url' }));
     document.getElementById('model').addEventListener('click', () => vscode.postMessage({ type: 'model' }));
+    document.getElementById('newSession').addEventListener('click', () => vscode.postMessage({ type: 'newSession' }));
+    document.getElementById('sessions').addEventListener('click', () => vscode.postMessage({ type: 'switchSession' }));
+    document.getElementById('renameSession').addEventListener('click', () => vscode.postMessage({ type: 'renameSession' }));
+    document.getElementById('deleteSession').addEventListener('click', () => vscode.postMessage({ type: 'deleteSession' }));
+    document.getElementById('rollback').addEventListener('click', () => vscode.postMessage({ type: 'rollback' }));
     document.getElementById('clear').addEventListener('click', () => vscode.postMessage({ type: 'clear' }));
+    workButton.addEventListener('click', () => {
+      workMode = !workMode;
+      workButton.className = workMode ? 'active' : 'secondary';
+      workButton.textContent = workMode ? 'Work On' : 'Work';
+    });
     input.addEventListener('keydown', (event) => {
       if (event.key === 'Enter' && event.ctrlKey) {
         event.preventDefault();
         send();
+      } else if (event.key === 'Escape') {
+        vscode.postMessage({ type: 'esc' });
       }
     });
 
     window.addEventListener('message', (event) => {
       const msg = event.data || {};
       if (msg.type === 'state') {
-        document.getElementById('status').textContent = 'Model: ' + msg.model + ' / profile: ' + msg.profile + ' / memory: ' + msg.messages + ' messages, ' + msg.contextItems + ' context';
+        document.getElementById('status').textContent = 'Session: ' + msg.sessionTitle + ' / Model: ' + msg.model + ' / memory: ' + msg.messages + ' messages, ' + msg.contextItems + ' context' + (msg.working ? ' / working' : '');
       } else if (msg.type === 'append') {
         append(msg.role, msg.text);
       } else if (msg.type === 'assistantStart') {
@@ -950,6 +1652,9 @@ function chatHtml(webview) {
         streaming = null;
       } else if (msg.type === 'notice') {
         append('system', msg.text || '');
+      } else if (msg.type === 'insertText') {
+        input.value = input.value + (msg.text || '');
+        input.focus();
       }
     });
 

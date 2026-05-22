@@ -131,3 +131,116 @@ test('buildDraftPrompt creates office-ready prompts for common document types', 
   assert.match(prompt, /行动项/);
   assert.match(prompt, /简洁正式/);
 });
+
+test('parseReferences finds file and skill references in chat text', () => {
+  const refs = core.parseReferences('请参考 @file:src/app.js 和 [[docs/readme.md]]，用 @skill:report #skill:meeting 处理。');
+
+  assert.deepEqual(refs.files, ['src/app.js', 'docs/readme.md']);
+  assert.deepEqual(refs.skills, ['report', 'meeting']);
+});
+
+test('normalizeWorkspacePath accepts relative project paths and rejects escapes', () => {
+  assert.equal(core.normalizeWorkspacePath('.\\src\\app.js'), 'src/app.js');
+  assert.equal(core.normalizeWorkspacePath('docs/readme.md'), 'docs/readme.md');
+  assert.throws(() => core.normalizeWorkspacePath('../secret.txt'), /outside workspace/);
+  assert.throws(() => core.normalizeWorkspacePath('C:\\Windows\\win.ini'), /absolute path/);
+});
+
+test('shouldIncludeWorkspaceFile skips excluded, binary, and oversized files', () => {
+  const opts = {
+    excludeDirs: ['.git', 'node_modules', 'dist'],
+    textExtensions: ['.js', '.md', '.json'],
+    maxFileBytes: 100
+  };
+
+  assert.equal(core.shouldIncludeWorkspaceFile('src/app.js', 80, opts), true);
+  assert.equal(core.shouldIncludeWorkspaceFile('node_modules/lib/index.js', 10, opts), false);
+  assert.equal(core.shouldIncludeWorkspaceFile('src/logo.png', 10, opts), false);
+  assert.equal(core.shouldIncludeWorkspaceFile('src/large.js', 101, opts), false);
+});
+
+test('buildWorkspaceContext renders a tree and selected file contents within budget', () => {
+  const context = core.buildWorkspaceContext([
+    { path: 'README.md', content: '# Title\n', bytes: 8 },
+    { path: 'src/app.js', content: 'console.log("hi");\n', bytes: 19 }
+  ], { maxChars: 200 });
+
+  assert.match(context, /Workspace file tree/);
+  assert.match(context, /README.md/);
+  assert.match(context, /src\/app.js/);
+  assert.match(context, /console\.log/);
+});
+
+test('extractFileChangePlan parses agent-files blocks and validates paths', () => {
+  const plan = core.extractFileChangePlan(`说明
+\`\`\`agent-files
+{
+  "summary": "update app",
+  "changes": [
+    {"action": "write", "path": "src/app.js", "content": "console.log(1);"},
+    {"action": "replace", "path": "README.md", "find": "old", "replace": "new"}
+  ]
+}
+\`\`\`
+`);
+
+  assert.equal(plan.summary, 'update app');
+  assert.deepEqual(plan.changes.map((change) => change.path), ['src/app.js', 'README.md']);
+  assert.equal(plan.changes[1].action, 'replace');
+});
+
+test('applyTextChange supports write and exact replace operations', () => {
+  assert.equal(core.applyTextChange('', { action: 'write', content: 'new file' }), 'new file');
+  assert.equal(core.applyTextChange('hello old world', { action: 'replace', find: 'old', replace: 'new' }), 'hello new world');
+  assert.throws(() => core.applyTextChange('hello world', { action: 'replace', find: 'missing', replace: 'new' }), /find text not found/);
+});
+
+test('buildRollbackSnapshot records original file contents before changes', () => {
+  const snapshot = core.buildRollbackSnapshot('change-1', [
+    { action: 'write', path: 'src/app.js', content: 'new' },
+    { action: 'create', path: 'src/new.js', content: 'new' }
+  ], {
+    'src/app.js': { exists: true, content: 'old' },
+    'src/new.js': { exists: false, content: '' }
+  });
+
+  assert.equal(snapshot.id, 'change-1');
+  assert.deepEqual(snapshot.files.map((file) => file.path), ['src/app.js', 'src/new.js']);
+  assert.equal(snapshot.files[0].originalExists, true);
+  assert.equal(snapshot.files[1].originalExists, false);
+});
+
+test('recordEscPress only stops continuous work on a quick double escape', () => {
+  let state = core.recordEscPress({}, 1000);
+  assert.equal(state.stop, false);
+  state = core.recordEscPress(state, 2500);
+  assert.equal(state.stop, false);
+  state = core.recordEscPress(state, 3000);
+  assert.equal(state.stop, true);
+});
+
+test('session helpers create, switch, rename, and delete isolated sessions', () => {
+  let index = core.ensureSessionIndex(null, 's1', '第一会话', '2026-05-22T00:00:00.000Z');
+  assert.equal(index.activeId, 's1');
+  assert.equal(index.sessions[0].title, '第一会话');
+
+  index = core.addSession(index, 's2', '第二会话', '2026-05-22T00:01:00.000Z');
+  assert.equal(index.activeId, 's2');
+  assert.deepEqual(index.sessions.map((item) => item.id), ['s1', 's2']);
+
+  index = core.renameSession(index, 's2', '改名后的会话');
+  assert.equal(index.sessions[1].title, '改名后的会话');
+
+  index = core.setActiveSession(index, 's1');
+  assert.equal(index.activeId, 's1');
+
+  index = core.deleteSession(index, 's1');
+  assert.equal(index.activeId, 's2');
+  assert.deepEqual(index.sessions.map((item) => item.id), ['s2']);
+});
+
+test('cleanSessionTitle keeps titles short and non-empty', () => {
+  assert.equal(core.cleanSessionTitle('  项目修复  '), '项目修复');
+  assert.equal(core.cleanSessionTitle(''), 'New Session');
+  assert.equal(core.cleanSessionTitle('a'.repeat(90)).length, 60);
+});

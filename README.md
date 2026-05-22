@@ -52,16 +52,18 @@ node scripts/package-vscode-extension.js
 The output is:
 
 ```text
-dist/win7-agent-vscode-0.3.0.vsix
+dist/win7-agent-vscode-0.4.0.vsix
 ```
 
 The VSIX includes:
 
 - VS Code Webview chat
+- continuous project work mode
 - model switching
 - bundled and workspace `SKILL.md` loading
 - persistent memory
-- text file and intranet URL context
+- workspace/project context, referenced files, text file and intranet URL context
+- project file create/write/replace/delete with rollback snapshots
 - command execution with high-risk confirmation
 - office document drafting
 - bundled `agent.exe` reuse for `docx/xlsx` read/write features
