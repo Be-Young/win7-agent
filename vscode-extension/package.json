@@ -1,0 +1,261 @@
+{
+  "name": "win7-agent",
+  "displayName": "Win7 Agent",
+  "description": "Offline-friendly OpenAI-compatible intranet agent for Windows 7 VS Code 1.70.x.",
+  "version": "0.3.0",
+  "publisher": "win7-agent",
+  "license": "UNLICENSED",
+  "engines": {
+    "vscode": "^1.70.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [
+    "onCommand:win7Agent.openChat",
+    "onCommand:win7Agent.askSelection",
+    "onCommand:win7Agent.readUrl",
+    "onCommand:win7Agent.readFile",
+    "onCommand:win7Agent.draftDocument",
+    "onCommand:win7Agent.switchModel",
+    "onCommand:win7Agent.runCommand",
+    "onCommand:win7Agent.showMemory",
+    "onCommand:win7Agent.clearMemory",
+    "onCommand:win7Agent.openManual"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "win7Agent.openChat",
+        "title": "Win7 Agent: Open Chat"
+      },
+      {
+        "command": "win7Agent.askSelection",
+        "title": "Win7 Agent: Ask Selection"
+      },
+      {
+        "command": "win7Agent.readUrl",
+        "title": "Win7 Agent: Read URL into Context"
+      },
+      {
+        "command": "win7Agent.readFile",
+        "title": "Win7 Agent: Read File into Context"
+      },
+      {
+        "command": "win7Agent.draftDocument",
+        "title": "Win7 Agent: Draft Office Document"
+      },
+      {
+        "command": "win7Agent.switchModel",
+        "title": "Win7 Agent: Switch Model"
+      },
+      {
+        "command": "win7Agent.runCommand",
+        "title": "Win7 Agent: Run Local Command"
+      },
+      {
+        "command": "win7Agent.showMemory",
+        "title": "Win7 Agent: Show Memory"
+      },
+      {
+        "command": "win7Agent.clearMemory",
+        "title": "Win7 Agent: Clear Memory"
+      },
+      {
+        "command": "win7Agent.openManual",
+        "title": "Win7 Agent: Open Chinese Manual"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "win7Agent.askSelection",
+          "group": "navigation@50",
+          "when": "editorTextFocus"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "win7Agent.openChat"
+        },
+        {
+          "command": "win7Agent.askSelection"
+        },
+        {
+          "command": "win7Agent.readUrl"
+        },
+        {
+          "command": "win7Agent.readFile"
+        },
+        {
+          "command": "win7Agent.draftDocument"
+        },
+        {
+          "command": "win7Agent.switchModel"
+        },
+        {
+          "command": "win7Agent.runCommand"
+        },
+        {
+          "command": "win7Agent.showMemory"
+        },
+        {
+          "command": "win7Agent.clearMemory"
+        },
+        {
+          "command": "win7Agent.openManual"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Win7 Agent",
+      "properties": {
+        "win7Agent.baseUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:8000/v1/chat/completions",
+          "description": "OpenAI-compatible chat completions endpoint, or a /v1 base URL."
+        },
+        "win7Agent.model": {
+          "type": "string",
+          "default": "local-model",
+          "description": "Default model name."
+        },
+        "win7Agent.activeModel": {
+          "type": "string",
+          "default": "",
+          "description": "Active model profile name from win7Agent.models. Empty uses default model settings."
+        },
+        "win7Agent.models": {
+          "type": "object",
+          "default": {},
+          "description": "Named model profiles. Each profile can set baseUrl, model, apiKey, stream, and headers."
+        },
+        "win7Agent.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "API key for the OpenAI-compatible endpoint. Leave empty if the intranet endpoint does not require one."
+        },
+        "win7Agent.stream": {
+          "type": "boolean",
+          "default": false,
+          "description": "Use OpenAI-style SSE streaming for chat responses."
+        },
+        "win7Agent.headers": {
+          "type": "object",
+          "default": {},
+          "description": "Extra HTTP headers sent to model and web requests."
+        },
+        "win7Agent.caFile": {
+          "type": "string",
+          "default": "",
+          "description": "Optional PEM CA certificate file for intranet HTTPS endpoints."
+        },
+        "win7Agent.insecureSkipVerify": {
+          "type": "boolean",
+          "default": false,
+          "description": "Skip HTTPS certificate verification for intranet endpoints. Prefer caFile when possible."
+        },
+        "win7Agent.authProfiles": {
+          "type": "object",
+          "default": {},
+          "description": "URL auth profiles for intranet pages. A profile can set match, headers, cookie, basicUsername, and basicPassword."
+        },
+        "win7Agent.skillsPaths": {
+          "type": "array",
+          "default": [
+            "skills"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "Skill directories. Relative paths are resolved from the current workspace."
+        },
+        "win7Agent.maxContentChars": {
+          "type": "number",
+          "default": 120000,
+          "description": "Maximum characters loaded from each local file or web page."
+        },
+        "win7Agent.timeoutSeconds": {
+          "type": "number",
+          "default": 120,
+          "description": "HTTP request timeout."
+        },
+        "win7Agent.agentExePath": {
+          "type": "string",
+          "default": "",
+          "description": "Optional external agent.exe path. The packaged VSIX also includes agent.exe for full document support."
+        },
+        "win7Agent.reuseBundledAgentExe": {
+          "type": "boolean",
+          "default": true,
+          "description": "Use the agent.exe bundled in the VSIX when available."
+        },
+        "win7Agent.memory.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Persist chat messages and loaded context."
+        },
+        "win7Agent.memory.maxMessages": {
+          "type": "number",
+          "default": 40,
+          "description": "Maximum remembered chat messages."
+        },
+        "win7Agent.memory.maxContextItems": {
+          "type": "number",
+          "default": 12,
+          "description": "Maximum remembered context items."
+        },
+        "win7Agent.command.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Allow local command execution."
+        },
+        "win7Agent.command.confirmPrefixes": {
+          "type": "array",
+          "default": [
+            "del",
+            "erase",
+            "format",
+            "reg",
+            "net",
+            "netsh",
+            "powershell",
+            "wmic",
+            "shutdown",
+            "sc",
+            "takeown",
+            "icacls",
+            "diskpart",
+            "cipher"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "Command prefixes that require user confirmation."
+        },
+        "win7Agent.command.blockedPrefixes": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "description": "Command prefixes that are never allowed."
+        },
+        "win7Agent.command.alwaysConfirm": {
+          "type": "boolean",
+          "default": false,
+          "description": "Ask for confirmation before every command."
+        },
+        "win7Agent.command.maxOutputBytes": {
+          "type": "number",
+          "default": 65536,
+          "description": "Maximum captured command output."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "test": "node --test test/core.test.js"
+  }
+}

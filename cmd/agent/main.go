@@ -70,7 +70,7 @@ func run(args []string) error {
 		}
 		return nil
 	case "version":
-		fmt.Println("win7-agent 0.2.0")
+		fmt.Println("win7-agent 0.3.0")
 		return nil
 	case "help", "-h", "--help":
 		usage()
@@ -634,7 +634,7 @@ func chatHelp() {
 }
 
 func printBanner(env runtimeEnv) {
-	fmt.Println("Win7 Agent CLI v0.2.0")
+	fmt.Println("Win7 Agent CLI v0.3.0")
 	fmt.Printf("Model: %s", env.active.Model)
 	if env.cfg.ActiveModel != "" {
 		fmt.Printf(" profile=%s", env.cfg.ActiveModel)

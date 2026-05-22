@@ -1,4 +1,4 @@
-# Win7 Agent CLI Quickstart
+# Win7 Agent Quickstart
 
 This is the full EXE edition for Windows 7 x64.
 
@@ -53,3 +53,23 @@ Commands in `blocked_prefixes` are refused.
 - Requires a Windows 7 x64 build of `agent.exe`.
 - Static web pages are supported. JavaScript-rendered pages are not rendered.
 - `docx` and `xlsx` support focuses on readable/generated content, not perfect Office layout preservation.
+
+## VS Code Extension Quickstart
+
+Use this when the Win7 office machine runs VS Code 1.70.x:
+
+1. Install `win7-agent-vscode-0.3.0.vsix` with `Extensions -> ... -> Install from VSIX...`.
+2. Open VS Code Settings JSON.
+3. Configure:
+
+```json
+{
+  "win7Agent.baseUrl": "http://你的内网地址/v1/chat/completions",
+  "win7Agent.model": "你的模型名称",
+  "win7Agent.apiKey": ""
+}
+```
+
+4. Run `Win7 Agent: Open Chat` from the command palette.
+
+The VSIX includes the same office skills and can reuse the bundled `agent.exe` for `docx/xlsx` document features.

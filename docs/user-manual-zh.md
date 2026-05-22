@@ -1,8 +1,8 @@
-# Win7 Agent CLI 中文操作手册
+# Win7 Agent 中文操作手册
 
-本文面向在 Windows 7 办公电脑上使用 `Win7 Agent CLI` 的用户。当前版本只保留 EXE 正式版，用于连接公司内网 OpenAI 兼容接口，并提供聊天、文档处理、网页读取、办公 skills、本地记忆、模型切换和受控命令执行能力。
+本文面向在 Windows 7 办公电脑上使用 `Win7 Agent` 的用户。当前版本包含 EXE 正式版和 VS Code 插件版，用于连接公司内网 OpenAI 兼容接口，并提供聊天、文档处理、网页读取、办公 skills、本地记忆、模型切换和受控命令执行能力。
 
-## 1. 安装
+## 1. EXE 版安装
 
 1. 获取 `agent-win7-x64.zip`。
 2. 解压到普通用户可写目录，例如：
@@ -32,6 +32,40 @@ copy config\agent.example.json config\agent.json
 ```bat
 agent.exe chat
 ```
+
+## 1.1 VS Code 插件版安装
+
+Windows 7 只能使用 VS Code 1.70.x，建议固定安装 VS Code 1.70.3。
+
+1. 获取 `win7-agent-vscode-0.3.0.vsix`。
+2. 打开 VS Code。
+3. 进入扩展面板，点击右上角 `...`。
+4. 选择 `Install from VSIX...`，选中 `.vsix` 文件。
+5. 安装后重启 VS Code。
+
+也可以使用命令行：
+
+```bat
+code --install-extension win7-agent-vscode-0.3.0.vsix
+```
+
+在 VS Code 设置 JSON 中填写：
+
+```json
+{
+  "win7Agent.baseUrl": "http://你的内网地址/v1/chat/completions",
+  "win7Agent.model": "你的模型名称",
+  "win7Agent.apiKey": ""
+}
+```
+
+打开聊天：
+
+```text
+Win7 Agent: Open Chat
+```
+
+VS Code 插件版支持聊天、模型切换、skills、记忆、文本文件、网页读取、命令执行和办公文档起草；对于 `docx/xlsx`，插件会调用随 VSIX 打包的 `agent.exe` 完成完整读写。
 
 ## 2. 配置说明
 
