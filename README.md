@@ -26,6 +26,9 @@ The EXE edition supports:
 - model profile switching
 - persistent local conversation/context memory
 - command execution enabled by default, with high-risk prefixes requiring confirmation
+- multi-step command tool calls that feed results back to the model, with a configurable round limit
+
+The full EXE edition (sometimes called the single-file edition because it is distributed as one `agent.exe`) is actively maintained. Contributions for either edition are welcome; open pull requests against `main`.
 
 ## Configuration
 
@@ -52,7 +55,7 @@ node scripts/package-vscode-extension.js
 The output is:
 
 ```text
-dist/win7-agent-vscode-0.4.3.vsix
+dist/win7-agent-vscode-0.4.4.vsix
 ```
 
 The VSIX includes:

@@ -9,6 +9,7 @@ Microsoft lists VS Code 1.70.3 as the last release for Windows 7. This extension
 ## Features
 
 - Webview chat with model switching and persistent memory.
+- Live streaming text and visible history restoration when a session is opened or switched.
 - Workspace/project context loading with text-file filtering.
 - File and skill references such as `@file:src/app.js` and `@skill:report`.
 - Isolated sessions with new, switch, rename, and delete.
@@ -29,7 +30,7 @@ Microsoft lists VS Code 1.70.3 as the last release for Windows 7. This extension
 ## Offline Install
 
 1. Install VS Code 1.70.3 x64 on Windows 7.
-2. Copy `win7-agent-vscode-0.4.3.vsix` into the intranet.
+2. Copy `win7-agent-vscode-0.4.4.vsix` into the intranet.
 3. In VS Code, open Extensions, choose `...`, then `Install from VSIX...`.
 4. Open Settings JSON and configure at least:
 

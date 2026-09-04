@@ -70,7 +70,7 @@ func run(args []string) error {
 		}
 		return nil
 	case "version":
-		fmt.Println("win7-agent 0.4.3")
+		fmt.Println("win7-agent 0.4.4")
 		return nil
 	case "help", "-h", "--help":
 		usage()
@@ -210,7 +210,7 @@ func chat(env runtimeEnv) error {
 			continue
 		case strings.HasPrefix(line, "/run "):
 			command := strings.TrimSpace(strings.TrimPrefix(line, "/run "))
-			if err := runCommand(env, reader, command); err != nil {
+			if _, err := runCommand(env, reader, command); err != nil {
 				fmt.Println("command error:", err)
 			}
 			continue
@@ -219,20 +219,57 @@ func chat(env runtimeEnv) error {
 		system := systemPrompt(skills.Prompt(selected), contextParts)
 		messages := append([]openai.Message{{Role: "system", Content: system}}, conversation...)
 		messages = append(messages, openai.Message{Role: "user", Content: line})
-		answer, err := send(env, messages)
-		if err != nil {
-			fmt.Println("api error:", err)
-			continue
-		}
-		session.AddMessages(openai.Message{Role: "user", Content: line}, openai.Message{Role: "assistant", Content: answer})
-		session.Trim(env.cfg.Memory.MaxMessages, env.cfg.Memory.MaxContextItems)
-		conversation = append([]openai.Message{}, session.Messages...)
-		_ = saveSession(env, session)
-		if action, ok := extractAction(answer); ok && action.Action == "run_command" {
-			fmt.Println("\nModel requested command:", action.Command)
-			if err := runCommand(env, reader, action.Command); err != nil {
-				fmt.Println("command error:", err)
+		toolRounds := 0
+		userStored := false
+		finalResponseOnly := false
+		for {
+			answer, err := send(env, messages)
+			if err != nil {
+				fmt.Println("api error:", err)
+				break
 			}
+			if !userStored {
+				session.AddMessages(openai.Message{Role: "user", Content: line})
+				userStored = true
+			}
+			session.AddMessages(openai.Message{Role: "assistant", Content: answer})
+			session.Trim(env.cfg.Memory.MaxMessages, env.cfg.Memory.MaxContextItems)
+			conversation = append([]openai.Message{}, session.Messages...)
+			_ = saveSession(env, session)
+
+			if finalResponseOnly {
+				if _, ok := extractAction(answer); ok {
+					fmt.Println("tool round limit reached; additional tool request was not executed")
+				}
+				break
+			}
+			action, ok := extractAction(answer)
+			if !ok {
+				break
+			}
+
+			toolRounds++
+			var toolOutput string
+			var toolErr error
+			if action.Action == "run_command" {
+				fmt.Println("\nModel requested command:", action.Command)
+				toolOutput, toolErr = runCommand(env, reader, action.Command)
+			} else {
+				toolErr = fmt.Errorf("unsupported tool action %q", action.Action)
+				fmt.Println("tool error:", toolErr)
+			}
+			feedback := formatToolFeedback(action, toolOutput, toolErr)
+			finalResponseOnly = toolRounds >= env.cfg.Command.MaxToolRounds
+			if finalResponseOnly {
+				feedback += "\n\nThe tool round limit has been reached. Do not request another tool; summarize the completed work, remaining problems, and next steps."
+			} else {
+				feedback += "\n\nContinue from this tool result. If the task is complete, provide the final answer without an agent-action block."
+			}
+			session.AddMessages(openai.Message{Role: "user", Content: feedback})
+			session.Trim(env.cfg.Memory.MaxMessages, env.cfg.Memory.MaxContextItems)
+			conversation = append([]openai.Message{}, session.Messages...)
+			_ = saveSession(env, session)
+			messages = append([]openai.Message{{Role: "system", Content: system}}, conversation...)
 		}
 	}
 }
@@ -521,7 +558,7 @@ func send(env runtimeEnv, messages []openai.Message) (string, error) {
 	return answer, nil
 }
 
-func runCommand(env runtimeEnv, reader *bufio.Reader, command string) error {
+func runCommand(env runtimeEnv, reader *bufio.Reader, command string) (string, error) {
 	policy := safety.CommandPolicy{
 		Enabled:         env.cfg.Command.Enabled,
 		ConfirmPrefixes: env.cfg.Command.ConfirmPrefixes,
@@ -530,36 +567,61 @@ func runCommand(env runtimeEnv, reader *bufio.Reader, command string) error {
 		MaxOutputBytes:  env.cfg.Command.MaxOutputBytes,
 	}
 	if err := policy.Validate(command); err != nil {
-		return err
+		return "", err
 	}
 	if env.cfg.Command.AlwaysConfirm || policy.RequiresConfirmation(command) {
 		fmt.Printf("High-risk command, confirm run? %s [y/N]: ", command)
 		line, _ := reader.ReadString('\n')
 		if strings.ToLower(strings.TrimSpace(line)) != "y" {
-			return errors.New("command cancelled")
+			return "", errors.New("command cancelled")
 		}
 	}
 	out, err := policy.Run(context.Background(), command)
 	if out != "" {
 		fmt.Println(out)
 	}
-	return err
+	return out, err
+}
+
+func formatToolFeedback(action agentAction, output string, toolErr error) string {
+	var b strings.Builder
+	b.WriteString("Tool result:\nAction: ")
+	b.WriteString(action.Action)
+	if action.Command != "" {
+		b.WriteString("\nCommand: ")
+		b.WriteString(action.Command)
+	}
+	if toolErr != nil {
+		b.WriteString("\nStatus: error\nError: ")
+		b.WriteString(toolErr.Error())
+	} else {
+		b.WriteString("\nStatus: ok")
+	}
+	b.WriteString("\nOutput:\n")
+	if strings.TrimSpace(output) == "" {
+		b.WriteString("[empty]")
+	} else {
+		b.WriteString(output)
+	}
+	return b.String()
 }
 
 func extractAction(text string) (agentAction, bool) {
-	start := strings.Index(text, "```agent-action")
+	start := strings.Index(strings.ToLower(text), "```agent-action")
 	if start >= 0 {
 		rest := text[start+len("```agent-action"):]
 		end := strings.Index(rest, "```")
 		if end >= 0 {
 			var action agentAction
 			if err := json.Unmarshal([]byte(strings.TrimSpace(rest[:end])), &action); err == nil {
+				action.Action = strings.ToLower(strings.TrimSpace(action.Action))
 				return action, true
 			}
 		}
 	}
 	var action agentAction
 	if err := json.Unmarshal([]byte(strings.TrimSpace(text)), &action); err == nil && action.Action != "" {
+		action.Action = strings.ToLower(strings.TrimSpace(action.Action))
 		return action, true
 	}
 	return agentAction{}, false
@@ -571,6 +633,7 @@ func systemPrompt(skillPrompt string, contextParts []string) string {
 	b.WriteString("Use only the provided context, local files, intranet URLs, and configured OpenAI-compatible API. ")
 	b.WriteString("If you need a local command, request it in a fenced block exactly like: ```agent-action\n{\"action\":\"run_command\",\"command\":\"dir\"}\n```. ")
 	b.WriteString("Ordinary local commands are allowed; high-risk command prefixes require user confirmation. ")
+	b.WriteString("After a command runs, inspect the returned tool result before deciding whether another command is needed. ")
 	b.WriteString("Do not ask to bypass corporate security controls.\n")
 	if skillPrompt != "" {
 		b.WriteByte('\n')
@@ -634,7 +697,7 @@ func chatHelp() {
 }
 
 func printBanner(env runtimeEnv) {
-	fmt.Println("Win7 Agent CLI v0.4.3")
+	fmt.Println("Win7 Agent CLI v0.4.4")
 	fmt.Printf("Model: %s", env.active.Model)
 	if env.cfg.ActiveModel != "" {
 		fmt.Printf(" profile=%s", env.cfg.ActiveModel)

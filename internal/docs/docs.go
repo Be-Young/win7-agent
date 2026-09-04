@@ -262,6 +262,7 @@ func worksheetRows(f *zip.File, shared []string) ([][]string, error) {
 	var rows [][]string
 	var row []string
 	var cellType string
+	var cellRef string
 	var value strings.Builder
 	inValue := false
 	for {
@@ -279,13 +280,16 @@ func worksheetRows(f *zip.File, shared []string) ([][]string, error) {
 				row = nil
 			case "c":
 				cellType = ""
+				cellRef = ""
+				value.Reset()
 				for _, a := range t.Attr {
 					if a.Name.Local == "t" {
 						cellType = a.Value
+					} else if a.Name.Local == "r" {
+						cellRef = a.Value
 					}
 				}
 			case "v", "t":
-				value.Reset()
 				inValue = true
 			}
 		case xml.CharData:
@@ -297,6 +301,10 @@ func worksheetRows(f *zip.File, shared []string) ([][]string, error) {
 			case "v", "t":
 				inValue = false
 			case "c":
+				column := cellColumn(cellRef)
+				for column > 0 && len(row) < column-1 {
+					row = append(row, "")
+				}
 				row = append(row, cellValue(cellType, value.String(), shared))
 				value.Reset()
 			case "row":
@@ -307,6 +315,21 @@ func worksheetRows(f *zip.File, shared []string) ([][]string, error) {
 		}
 	}
 	return rows, nil
+}
+
+func cellColumn(ref string) int {
+	column := 0
+	for _, ch := range strings.TrimSpace(ref) {
+		switch {
+		case ch >= 'A' && ch <= 'Z':
+			column = column*26 + int(ch-'A'+1)
+		case ch >= 'a' && ch <= 'z':
+			column = column*26 + int(ch-'a'+1)
+		default:
+			return column
+		}
+	}
+	return column
 }
 
 func cellValue(cellType, raw string, shared []string) string {

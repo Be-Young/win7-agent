@@ -33,6 +33,16 @@ test('resolveModel merges the active profile over global settings', () => {
   });
 });
 
+test('resolveModel lets a profile explicitly clear an inherited API key', () => {
+  const resolved = core.resolveModel({
+    apiKey: 'global-secret',
+    activeModel: 'anonymous',
+    models: { anonymous: { model: 'local', apiKey: '' } }
+  });
+
+  assert.equal(resolved.apiKey, '');
+});
+
 test('command policy blocks explicit blocked prefixes and confirms high risk prefixes', () => {
   const policy = {
     enabled: true,
@@ -46,6 +56,22 @@ test('command policy blocks explicit blocked prefixes and confirms high risk pre
   assert.equal(core.requiresConfirmation('reg query HKCU', policy), true);
   assert.equal(core.requiresConfirmation('powershell.exe Get-Process', policy), true);
   assert.equal(core.requiresConfirmation('type notes.txt', policy), false);
+});
+
+test('command policy inspects compound commands without matching quoted text', () => {
+  const policy = {
+    enabled: true,
+    blockedPrefixes: ['format'],
+    confirmPrefixes: ['del', 'powershell']
+  };
+
+  assert.equal(core.validateCommand('echo ready && format C:', policy).ok, false);
+  assert.equal(core.requiresConfirmation('dir | powershell.exe Get-Process', policy), true);
+  assert.equal(core.requiresConfirmation('echo "del important.txt"', policy), false);
+  assert.equal(core.requiresConfirmation("echo 'safe & del important.txt'", policy), true);
+  assert.equal(core.requiresConfirmation('cmd.exe /d /c "echo ready & del important.txt"', policy), true);
+  assert.equal(core.validateCommand('cmd /c format C:', policy).ok, false);
+  assert.equal(core.requiresConfirmation('"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -NoProfile', policy), true);
 });
 
 test('parseSkillMarkdown extracts front matter and leaves prompt body clean', () => {
@@ -167,6 +193,13 @@ test('shouldIncludeWorkspaceFile skips excluded, binary, and oversized files', (
   assert.equal(core.shouldIncludeWorkspaceFile('src/large.js', 101, opts), false);
 });
 
+test('workspace directory traversal does not depend on configured file extensions', () => {
+  const opts = { excludeDirs: ['node_modules'], textExtensions: ['.js'] };
+
+  assert.equal(core.shouldTraverseWorkspaceDir('src/components', opts), true);
+  assert.equal(core.shouldTraverseWorkspaceDir('src/node_modules/pkg', opts), false);
+});
+
 test('buildWorkspaceContext renders a tree and selected file contents within budget', () => {
   const context = core.buildWorkspaceContext([
     { path: 'README.md', content: '# Title\n', bytes: 8 },
@@ -195,6 +228,17 @@ test('extractFileChangePlan parses agent-files blocks and validates paths', () =
   assert.equal(plan.summary, 'update app');
   assert.deepEqual(plan.changes.map((change) => change.path), ['src/app.js', 'README.md']);
   assert.equal(plan.changes[1].action, 'replace');
+});
+
+test('extractFileChangePlan rejects duplicate Windows file paths', () => {
+  assert.throws(() => core.extractFileChangePlan(`
+\`\`\`agent-files
+{"changes":[
+  {"action":"write","path":"src/App.js","content":"one"},
+  {"action":"write","path":"src/app.js","content":"two"}
+]}
+\`\`\`
+`), /duplicate file path/);
 });
 
 test('applyTextChange supports write and exact replace operations', () => {
@@ -266,6 +310,40 @@ test('formatCommandResult preserves stdout stderr and exit code for model feedba
   assert.match(text, /file-a\.txt/);
   assert.match(text, /warning/);
   assert.match(text, /exit status 1/);
+});
+
+test('continuous work memory keeps real tool results instead of step placeholders', () => {
+  let memory = core.appendWorkTurn({ messages: [], context: [] }, {
+    userText: '修复测试',
+    answer: '先运行测试',
+    results: ['Command: npm test\nExit code: 0']
+  });
+  memory = core.appendWorkTurn(memory, { answer: '测试通过，已完成' });
+
+  assert.deepEqual(memory.messages.map((item) => item.role), ['user', 'assistant', 'user', 'assistant']);
+  assert.match(memory.messages[2].content, /^Tool results:/);
+  assert.doesNotMatch(memory.messages[2].content, /continuous work step/);
+});
+
+test('conversationHistory restores assistant sections and labels tool results as system output', () => {
+  const history = core.conversationHistory([
+    { role: 'user', content: '开始' },
+    { role: 'assistant', content: '完成\n```agent-action\n{"action":"run_command","command":"dir"}\n```' },
+    { role: 'user', content: 'Tool results:\nCommand: dir' },
+    { role: 'system', content: 'hidden' }
+  ]);
+
+  assert.deepEqual(history.map((item) => item.role), ['user', 'assistant', 'system']);
+  assert.deepEqual(history[1].parts.map((part) => part.kind), ['answer', 'agent-action']);
+});
+
+test('withApiKeyHeader preserves an explicit Authorization header', () => {
+  assert.deepEqual(core.withApiKeyHeader({ Authorization: 'Basic abc' }, 'token'), { Authorization: 'Basic abc' });
+  assert.deepEqual(core.withApiKeyHeader({ authorization: 'Custom abc' }, 'token'), { authorization: 'Custom abc' });
+  assert.deepEqual(core.withApiKeyHeader({ 'X-Test': '1' }, 'token'), {
+    'X-Test': '1',
+    Authorization: 'Bearer token'
+  });
 });
 
 test('splitAssistantContent separates final answer from folded think and tool blocks', () => {

@@ -41,12 +41,15 @@ Local command execution is enabled by default. Ordinary commands run directly; h
 "command": {
   "enabled": true,
   "confirm_prefixes": ["del", "reg", "powershell", "shutdown"],
-  "blocked_prefixes": [],
-  "always_confirm": false
+    "blocked_prefixes": [],
+    "always_confirm": false,
+    "max_tool_rounds": 8
 }
 ```
 
 Commands in `blocked_prefixes` are refused.
+
+When the model requests a command, the CLI sends stdout, errors, and cancellation results back to the model so it can continue the task. `max_tool_rounds` prevents an accidental infinite tool loop.
 
 ## Limitations
 
@@ -58,7 +61,7 @@ Commands in `blocked_prefixes` are refused.
 
 Use this when the Win7 office machine runs VS Code 1.70.x:
 
-1. Install `win7-agent-vscode-0.4.3.vsix` with `Extensions -> ... -> Install from VSIX...`.
+1. Install `win7-agent-vscode-0.4.4.vsix` with `Extensions -> ... -> Install from VSIX...`.
 2. Open VS Code Settings JSON.
 3. Configure:
 
@@ -83,4 +86,4 @@ Useful VS Code chat references:
 
 In chat, click `Project` to load the current workspace into context. Sending any task now starts continuous work by default, without a fixed turn limit. Press `Esc` twice to abort the current model request or command immediately. File edits made by the agent save rollback snapshots, and `Win7 Agent: Rollback Last File Change` restores the previous state.
 
-Sessions are isolated. Use `New`, `Sessions`, `Rename`, and `Delete` in the chat toolbar, or the matching command palette commands, to manage historical conversations.
+Sessions are isolated. Use `New`, `Sessions`, `Rename`, and `Delete` in the chat toolbar, or the matching command palette commands, to manage historical conversations. Opening or switching a session restores its visible chat history.

@@ -1,6 +1,6 @@
 # Win7 Agent 中文操作手册
 
-本文面向在 Windows 7 办公电脑上使用 `Win7 Agent` 的用户。当前版本包含 EXE 正式版和 VS Code 插件版，用于连接公司内网 OpenAI 兼容接口，并提供聊天、文档处理、网页读取、办公 skills、本地记忆、模型切换和受控命令执行能力。
+本文面向在 Windows 7 办公电脑上使用 `Win7 Agent` 的用户。当前版本包含 EXE 正式版和 VS Code 插件版，用于连接公司内网 OpenAI 兼容接口，并提供聊天、文档处理、网页读取、办公 skills、本地记忆、模型切换和受控命令执行能力。EXE 版有时也被称为“单文件版”，目前仍在维护；欢迎针对任一版本提交 Issue，并向 `main` 分支提交 PR。
 
 ## 1. EXE 版安装
 
@@ -37,7 +37,7 @@ agent.exe chat
 
 Windows 7 只能使用 VS Code 1.70.x，建议固定安装 VS Code 1.70.3。
 
-1. 获取 `win7-agent-vscode-0.4.3.vsix`。
+1. 获取 `win7-agent-vscode-0.4.4.vsix`。
 2. 打开 VS Code。
 3. 进入扩展面板，点击右上角 `...`。
 4. 选择 `Install from VSIX...`，选中 `.vsix` 文件。
@@ -46,7 +46,7 @@ Windows 7 只能使用 VS Code 1.70.x，建议固定安装 VS Code 1.70.3。
 也可以使用命令行：
 
 ```bat
-code --install-extension win7-agent-vscode-0.4.3.vsix
+code --install-extension win7-agent-vscode-0.4.4.vsix
 ```
 
 在 VS Code 设置 JSON 中填写：
@@ -118,6 +118,7 @@ VS Code 插件版支持聊天、模型切换、skills、记忆、当前项目读
 
 - 只允许相对当前工作区的路径。
 - `../`、绝对路径、盘符路径会被拒绝。
+- 项目扫描会跳过符号链接，文件修改也不能沿符号链接写出工作区。
 - 默认跳过 `.git`、`node_modules`、`dist`、`build` 等目录。
 - 默认只读取常见文本文件，跳过二进制和过大的文件。
 - 回退只针对插件应用过的文件修改。
@@ -166,6 +167,7 @@ config\agent.json
 | `command.enabled` | 是否允许本地命令执行，默认开启 |
 | `command.confirm_prefixes` | 高危命令前缀，命中后需要人工确认 |
 | `command.blocked_prefixes` | 永远拒绝执行的命令前缀，默认空 |
+| `command.max_tool_rounds` | 单次用户请求最多连续执行的工具轮数，默认 8 |
 | `memory.enabled` | 是否启用本地会话记忆 |
 | `memory.session_file` | 记忆保存文件 |
 | `max_content_chars` | 文档和网页送入模型前的最大字符数 |
@@ -464,9 +466,12 @@ del, erase, format, reg, net, netsh, powershell, wmic, shutdown, sc, takeown, ic
   "blocked_prefixes": [],
   "always_confirm": false,
   "audit_log": "logs/commands.log",
-  "max_output_bytes": 65536
+  "max_output_bytes": 65536,
+  "max_tool_rounds": 8
 }
 ```
+
+模型请求命令后，CLI 会把命令输出、非零退出、拒绝或取消结果回传给模型，再由模型决定继续调用工具或给出最终答复。达到 `max_tool_rounds` 后不再执行新命令，并要求模型总结已有结果，避免无限循环。
 
 执行命令：
 
@@ -485,6 +490,7 @@ High-risk command, confirm run? del temp.txt [y/N]:
 
 - 不熟悉的命令不要确认。
 - 可以把公司明确禁止的命令加入 `blocked_prefixes`。
+- 复合命令中的每一段都会检查，例如 `echo ready && del temp.txt` 仍会触发高危确认。
 - 命令审计日志默认写入 `logs\commands.log`。
 
 ## 11. 邮件和内网分发建议

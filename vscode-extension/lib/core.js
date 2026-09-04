@@ -22,11 +22,12 @@ function resolveModel(settings, requestedName) {
   if (profile && profile.headers) {
     Object.assign(mergedHeaders, profile.headers);
   }
+  const profileHasApiKey = profile && Object.prototype.hasOwnProperty.call(profile, 'apiKey');
   const resolved = {
     profileName: profile ? name : 'default',
     baseUrl: (profile && profile.baseUrl) || cfg.baseUrl || DEFAULT_BASE_URL,
     model: (profile && profile.model) || cfg.model || DEFAULT_MODEL,
-    apiKey: (profile && profile.apiKey) || cfg.apiKey || '',
+    apiKey: profileHasApiKey ? String(profile.apiKey || '') : (cfg.apiKey || ''),
     stream: cfg.stream === true,
     headers: mergedHeaders
   };
@@ -37,12 +38,134 @@ function resolveModel(settings, requestedName) {
 }
 
 function hasCommandPrefix(command, prefix) {
-  const cmd = String(command || '').trim().toLowerCase();
   const pfx = String(prefix || '').trim().toLowerCase();
-  if (!cmd || !pfx) {
+  if (!pfx) {
     return false;
   }
-  return cmd === pfx || cmd.indexOf(pfx + ' ') === 0 || cmd.indexOf(pfx + '.') === 0;
+  return splitCommandSegments(command).some((segment) => commandSegmentHasPrefix(segment, pfx));
+}
+
+function splitCommandSegments(command) {
+  const value = String(command || '');
+  const segments = [];
+  let start = 0;
+  let quote = '';
+  let escaped = false;
+  for (let i = 0; i < value.length; i += 1) {
+    const ch = value[i];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === '^') {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (ch === quote) {
+        quote = '';
+      }
+      continue;
+    }
+    if (ch === '"') {
+      quote = ch;
+      continue;
+    }
+    if (ch === '&' || ch === '|' || ch === ';' || ch === '\r' || ch === '\n' || ch === '(' || ch === ')') {
+      const segment = value.slice(start, i).trim();
+      if (segment) {
+        segments.push(segment);
+      }
+      start = i + 1;
+    }
+  }
+  const tail = value.slice(start).trim();
+  if (tail) {
+    segments.push(tail);
+  }
+  return segments;
+}
+
+function commandSegmentHasPrefix(segment, prefix) {
+  let command = String(segment || '').trim().toLowerCase();
+  command = command.replace(/^@+/, '').trim();
+  if (!command) {
+    return false;
+  }
+  if (matchesCommandStart(command, prefix)) {
+    return true;
+  }
+  const first = firstCommand(command);
+  const executable = first.token;
+  if (!executable) {
+    return false;
+  }
+  const basename = executable.replace(/\\/g, '/').split('/').pop();
+  if (matchesCommandStart(basename, prefix)) {
+    return true;
+  }
+  const nested = nestedWindowsCommand(basename, first.rest);
+  return nested ? hasCommandPrefix(nested, prefix) : false;
+}
+
+function matchesCommandStart(command, prefix) {
+  if (command === prefix) {
+    return true;
+  }
+  if (command.indexOf(prefix) !== 0) {
+    return false;
+  }
+  const next = command.slice(prefix.length, prefix.length + 1);
+  return next === '.' || /\s/.test(next);
+}
+
+function firstCommandToken(command) {
+  return firstCommand(command).token;
+}
+
+function firstCommand(command) {
+  const value = String(command || '').trim();
+  if (!value) {
+    return { token: '', rest: '' };
+  }
+  if (value[0] === '"' || value[0] === '\'') {
+    const end = value.indexOf(value[0], 1);
+    return end > 0
+      ? { token: value.slice(1, end), rest: value.slice(end + 1).trim() }
+      : { token: value.slice(1), rest: '' };
+  }
+  const match = /^\S+/.exec(value);
+  return match ? { token: match[0], rest: value.slice(match[0].length).trim() } : { token: '', rest: '' };
+}
+
+function nestedWindowsCommand(executable, rest) {
+  const name = String(executable || '').toLowerCase().replace(/\.(exe|com|bat|cmd)$/i, '');
+  let value = String(rest || '').trim();
+  if (name === 'call') {
+    return stripOuterDoubleQuotes(value);
+  }
+  if (name !== 'cmd' && name !== 'command' && name !== '%comspec%') {
+    return '';
+  }
+  while (value) {
+    const first = firstCommand(value);
+    const option = first.token.toLowerCase();
+    if (option === '/c' || option === '/k') {
+      return stripOuterDoubleQuotes(first.rest);
+    }
+    if (option[0] !== '/') {
+      return '';
+    }
+    value = first.rest;
+  }
+  return '';
+}
+
+function stripOuterDoubleQuotes(value) {
+  const text = String(value || '').trim();
+  return text.length >= 2 && text[0] === '"' && text[text.length - 1] === '"'
+    ? text.slice(1, -1)
+    : text;
 }
 
 function validateCommand(command, policy) {
@@ -250,12 +373,9 @@ function shouldIncludeWorkspaceFile(relativePath, bytes, options) {
     return false;
   }
   const opts = options || {};
-  const excludeDirs = (opts.excludeDirs || DEFAULT_EXCLUDE_DIRS).map((item) => String(item).toLowerCase());
-  const segments = normalized.split('/').map((item) => item.toLowerCase());
-  for (let i = 0; i < segments.length - 1; i += 1) {
-    if (excludeDirs.indexOf(segments[i]) >= 0) {
-      return false;
-    }
+  const directory = normalized.split('/').slice(0, -1).join('/');
+  if (directory && !shouldTraverseWorkspaceDir(directory, opts)) {
+    return false;
   }
   if (opts.maxFileBytes > 0 && bytes > opts.maxFileBytes) {
     return false;
@@ -266,6 +386,19 @@ function shouldIncludeWorkspaceFile(relativePath, bytes, options) {
     return false;
   }
   return true;
+}
+
+function shouldTraverseWorkspaceDir(relativePath, options) {
+  let normalized;
+  try {
+    normalized = normalizeWorkspacePath(relativePath);
+  } catch (err) {
+    return false;
+  }
+  const opts = options || {};
+  const excludeDirs = (opts.excludeDirs || DEFAULT_EXCLUDE_DIRS).map((item) => String(item).toLowerCase());
+  const segments = normalized.split('/').map((item) => item.toLowerCase());
+  return !segments.some((segment) => excludeDirs.indexOf(segment) >= 0);
 }
 
 function extensionOf(relativePath) {
@@ -317,9 +450,18 @@ function extractFileChangePlan(text) {
   if (changes.length === 0) {
     throw new Error('agent-files block has no changes');
   }
+  const normalized = changes.map(normalizeFileChange);
+  const paths = {};
+  normalized.forEach((change) => {
+    const key = change.path.toLowerCase();
+    if (paths[key]) {
+      throw new Error('duplicate file path in change plan: ' + change.path);
+    }
+    paths[key] = true;
+  });
   return {
     summary: String(parsed.summary || ''),
-    changes: changes.map(normalizeFileChange)
+    changes: normalized
   };
 }
 
@@ -575,6 +717,59 @@ function formatCommandResult(command, result, maxChars) {
     return text.slice(0, maxChars) + '\n[command result truncated]';
   }
   return text;
+}
+
+function formatToolResults(results) {
+  const values = (Array.isArray(results) ? results : [])
+    .map((item) => String(item || '').trim())
+    .filter(Boolean);
+  return values.length > 0 ? 'Tool results:\n' + values.join('\n\n') : '';
+}
+
+function appendWorkTurn(memory, turn) {
+  const source = memory || {};
+  const input = turn || {};
+  const next = {
+    messages: Array.isArray(source.messages) ? source.messages.slice() : [],
+    context: Array.isArray(source.context) ? source.context.slice() : []
+  };
+  if (input.userText != null && String(input.userText).trim()) {
+    next.messages.push({ role: 'user', content: String(input.userText) });
+  }
+  if (input.answer != null) {
+    next.messages.push({ role: 'assistant', content: String(input.answer) });
+  }
+  const toolText = formatToolResults(input.results);
+  if (toolText) {
+    next.messages.push({ role: 'user', content: toolText });
+  }
+  return next;
+}
+
+function conversationHistory(messages) {
+  return (Array.isArray(messages) ? messages : []).reduce((out, message) => {
+    const role = message && message.role;
+    const text = message && message.content != null ? String(message.content) : '';
+    if ((role !== 'user' && role !== 'assistant') || !text) {
+      return out;
+    }
+    const toolResult = role === 'user' && text.indexOf('Tool results:\n') === 0;
+    out.push({
+      role: toolResult ? 'system' : role,
+      text: text,
+      parts: role === 'assistant' ? splitAssistantContent(text) : undefined
+    });
+    return out;
+  }, []);
+}
+
+function withApiKeyHeader(headers, apiKey) {
+  const out = Object.assign({}, headers || {});
+  const hasAuthorization = Object.keys(out).some((key) => key.toLowerCase() === 'authorization');
+  if (apiKey && !hasAuthorization) {
+    out.Authorization = 'Bearer ' + apiKey;
+  }
+  return out;
 }
 
 function ensureSessionIndex(index, fallbackId, fallbackTitle, now) {
@@ -887,6 +1082,7 @@ module.exports = {
   DEFAULT_MODEL,
   resolveModel,
   hasCommandPrefix,
+  splitCommandSegments,
   validateCommand,
   requiresConfirmation,
   parseSkillMarkdown,
@@ -894,6 +1090,7 @@ module.exports = {
   parseReferences,
   normalizeWorkspacePath,
   shouldIncludeWorkspaceFile,
+  shouldTraverseWorkspaceDir,
   buildWorkspaceContext,
   extractFileChangePlan,
   applyTextChange,
@@ -912,6 +1109,10 @@ module.exports = {
   renameSession,
   deleteSession,
   formatCommandResult,
+  formatToolResults,
+  appendWorkTurn,
+  conversationHistory,
+  withApiKeyHeader,
   extractHtml,
   trimMemory,
   contextToParts,

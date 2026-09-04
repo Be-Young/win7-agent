@@ -7,6 +7,7 @@ const http = require('http');
 const https = require('https');
 const childProcess = require('child_process');
 const core = require('./lib/core');
+const workspaceTools = require('./lib/workspace');
 
 let output;
 const panelStates = new WeakMap();
@@ -116,6 +117,9 @@ async function openChat(context) {
   );
   panel.webview.html = chatHtml(panel.webview);
   panelStates.set(panel, { working: false, stopRequested: false, esc: {}, currentAbort: null });
+  panel.onDidDispose(() => {
+    abortPanelWork(panel, 'Chat panel closed.');
+  }, undefined, context.subscriptions);
   panel.webview.onDidReceiveMessage((message) => {
     handlePanelMessage(context, panel, message).catch((err) => {
       const msg = err && err.message ? err.message : String(err);
@@ -131,7 +135,7 @@ async function handlePanelMessage(context, panel, message) {
     return;
   }
   if (message.type === 'ready') {
-    await postPanelState(context, panel);
+    await postPanelState(context, panel, true);
     return;
   }
   if (message.type === 'send') {
@@ -165,13 +169,12 @@ async function handlePanelMessage(context, panel, message) {
   }
   if (message.type === 'newSession') {
     await newSessionCommand(context);
-    panel.webview.postMessage({ type: 'notice', text: 'New session created.' });
-    await postPanelState(context, panel);
+    await postPanelState(context, panel, true);
     return;
   }
   if (message.type === 'switchSession') {
     await switchSessionCommand(context);
-    await postPanelState(context, panel);
+    await postPanelState(context, panel, true);
     return;
   }
   if (message.type === 'renameSession') {
@@ -181,7 +184,7 @@ async function handlePanelMessage(context, panel, message) {
   }
   if (message.type === 'deleteSession') {
     await deleteSessionCommand(context);
-    await postPanelState(context, panel);
+    await postPanelState(context, panel, true);
     return;
   }
   if (message.type === 'esc') {
@@ -201,12 +204,12 @@ async function handlePanelMessage(context, panel, message) {
   }
   if (message.type === 'clear') {
     await clearMemory(context);
+    await postPanelState(context, panel, true);
     panel.webview.postMessage({ type: 'notice', text: 'Memory cleared.' });
-    await postPanelState(context, panel);
   }
 }
 
-async function postPanelState(context, panel) {
+async function postPanelState(context, panel, includeHistory) {
   const settings = getSettings();
   const memory = await loadMemory(context);
   const session = activeSessionMeta(context);
@@ -219,7 +222,8 @@ async function postPanelState(context, panel) {
     messages: memory.messages.length,
     contextItems: memory.context.length,
     stream: settings.stream,
-    working: getPanelState(panel).working
+    working: getPanelState(panel).working,
+    history: includeHistory ? core.conversationHistory(memory.messages) : undefined
   });
 }
 
@@ -290,7 +294,7 @@ async function sendWorkMessage(context, panel, text) {
   await postPanelState(context, panel);
   const settings = getSettings();
   const skills = loadSkills(context, settings);
-  const memory = await loadMemory(context);
+  let memory = await loadMemory(context);
   const workMemory = {
     messages: memory.messages.slice(),
     context: memory.context.slice()
@@ -320,9 +324,11 @@ async function sendWorkMessage(context, panel, text) {
         panel.webview.postMessage({ type: 'assistantDelta', text: delta });
       });
       panel.webview.postMessage({ type: 'assistantDone', text: answer, parts: core.splitAssistantContent(answer) });
-      memory.messages.push({ role: 'user', content: turn === 1 ? userText : '[continuous work step ' + turn + ']' });
-      memory.messages.push({ role: 'assistant', content: answer });
-      await saveMemory(context, core.trimMemory(memory, settings.memory.maxMessages, settings.memory.maxContextItems));
+      memory = core.trimMemory(core.appendWorkTurn(memory, {
+        userText: turn === 1 ? userText : null,
+        answer: answer
+      }), settings.memory.maxMessages, settings.memory.maxContextItems);
+      await saveMemory(context, memory);
 
       if (state.stopRequested) {
         panel.webview.postMessage({ type: 'notice', text: 'Continuous work stopped.' });
@@ -332,6 +338,11 @@ async function sendWorkMessage(context, panel, text) {
         autoApplyFileChanges: settings.work.autoApplyFileChanges,
         collectResults: true
       });
+      const toolText = core.formatToolResults(results);
+      if (toolText) {
+        memory = core.trimMemory(core.appendWorkTurn(memory, { results: results }), settings.memory.maxMessages, settings.memory.maxContextItems);
+        await saveMemory(context, memory);
+      }
       if (!core.shouldContinueWork(turn, results, {
         maxTurns: settings.work.maxTurns,
         stopRequested: state.stopRequested
@@ -340,7 +351,7 @@ async function sendWorkMessage(context, panel, text) {
       }
       messages = messages.concat([
         { role: 'assistant', content: answer },
-        { role: 'user', content: 'Tool results:\n' + results.join('\n\n') + '\n\nContinue working. If the task is complete, provide a concise final summary without tool blocks.' }
+        { role: 'user', content: toolText + '\n\nContinue working. If the task is complete, provide a concise final summary without tool blocks.' }
       ]);
     }
   } catch (err) {
@@ -854,53 +865,7 @@ function scanWorkspaceFiles(settings) {
     textExtensions: settings.workspace.textExtensions,
     maxFileBytes: settings.workspace.maxFileBytes
   };
-  const files = [];
-  scanDir(root, root, opts, settings.workspace.maxFiles || 300, files);
-  return files;
-}
-
-function scanDir(root, dir, opts, maxFiles, out) {
-  if (out.length >= maxFiles) {
-    return;
-  }
-  let entries;
-  try {
-    entries = fs.readdirSync(dir);
-  } catch (err) {
-    return;
-  }
-  entries.sort().forEach((entry) => {
-    if (out.length >= maxFiles) {
-      return;
-    }
-    const full = path.join(dir, entry);
-    let stat;
-    try {
-      stat = fs.statSync(full);
-    } catch (err) {
-      return;
-    }
-    const rel = path.relative(root, full).replace(/\\/g, '/');
-    if (stat.isDirectory()) {
-      if (core.shouldIncludeWorkspaceFile(rel + '/placeholder.md', 0, opts)) {
-        scanDir(root, full, opts, maxFiles, out);
-      }
-      return;
-    }
-    if (!stat.isFile() || !core.shouldIncludeWorkspaceFile(rel, stat.size, opts)) {
-      return;
-    }
-    let content;
-    try {
-      content = fs.readFileSync(full, 'utf8');
-    } catch (err) {
-      return;
-    }
-    if (content.indexOf('\u0000') >= 0) {
-      return;
-    }
-    out.push({ path: rel, content: content, bytes: stat.size, truncated: false });
-  });
+  return workspaceTools.scanWorkspaceFiles(root, opts, settings.workspace.maxFiles || 300);
 }
 
 async function pickWorkspaceFile(settings) {
@@ -975,17 +940,7 @@ async function applyFileChangePlan(context, plan) {
 
 function safeWorkspacePath(relativePath) {
   const root = workspaceRoot();
-  if (!root) {
-    throw new Error('No workspace folder is open.');
-  }
-  const rel = core.normalizeWorkspacePath(relativePath);
-  const target = path.resolve(root, rel);
-  const rootResolved = path.resolve(root);
-  const prefix = rootResolved.endsWith(path.sep) ? rootResolved : rootResolved + path.sep;
-  if (target !== rootResolved && target.indexOf(prefix) !== 0) {
-    throw new Error('path outside workspace is not allowed: ' + relativePath);
-  }
-  return target;
+  return workspaceTools.resolveWorkspacePath(root, relativePath);
 }
 
 function changeId() {
@@ -1119,7 +1074,7 @@ async function readLocalFile(context, filePath, settings) {
 function readUrl(rawUrl, settings) {
   return new Promise((resolve, reject) => {
     const endpoint = new URL(rawUrl);
-    const headers = Object.assign({ 'User-Agent': 'win7-agent-vscode/0.4.3' }, settings.headers || {});
+    const headers = Object.assign({ 'User-Agent': 'win7-agent-vscode/0.4.4' }, settings.headers || {});
     applyAuthProfiles(rawUrl, settings.authProfiles || {}, headers);
     const client = endpoint.protocol === 'https:' ? https : http;
     const req = client.request(endpoint, tlsOptions(settings, {
@@ -1204,13 +1159,10 @@ function chatCompletion(settings, messages, onDelta, abortHandle) {
       messages: messages,
       stream: settings.stream === true
     });
-    const headers = Object.assign({
+    const headers = core.withApiKeyHeader(Object.assign({
       'Content-Type': 'application/json',
       'Content-Length': Buffer.byteLength(body)
-    }, settings.headers || {});
-    if (settings.apiKey) {
-      headers.Authorization = 'Bearer ' + settings.apiKey;
-    }
+    }, settings.headers || {}), settings.apiKey);
     const client = endpoint.protocol === 'https:' ? https : http;
     let settled = false;
     function done(value) {
@@ -1235,26 +1187,29 @@ function chatCompletion(settings, messages, onDelta, abortHandle) {
       const chunks = [];
       let answer = '';
       let sseBuffer = '';
+      function consumeSseLine(line) {
+        const parsed = parseSseLine(line);
+        if (!parsed || parsed.done || !parsed.content) {
+          return;
+        }
+        answer += parsed.content;
+        if (onDelta) {
+          onDelta(parsed.content);
+        }
+      }
       res.on('data', (chunk) => {
         if (abortHandle && abortHandle.aborted) {
+          return;
+        }
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          chunks.push(chunk);
           return;
         }
         if (settings.stream) {
           sseBuffer += chunk.toString('utf8');
           const lines = sseBuffer.split(/\r?\n/);
           sseBuffer = lines.pop() || '';
-          lines.forEach((line) => {
-            const parsed = parseSseLine(line);
-            if (!parsed || parsed.done) {
-              return;
-            }
-            if (parsed.content) {
-              answer += parsed.content;
-              if (onDelta) {
-                onDelta(parsed.content);
-              }
-            }
-          });
+          lines.forEach(consumeSseLine);
         } else {
           chunks.push(chunk);
         }
@@ -1265,11 +1220,14 @@ function chatCompletion(settings, messages, onDelta, abortHandle) {
           return;
         }
         if (res.statusCode < 200 || res.statusCode >= 300) {
-          const text = settings.stream ? answer : Buffer.concat(chunks).toString('utf8');
+          const text = Buffer.concat(chunks).toString('utf8');
           fail(new Error('api status ' + res.statusCode + ': ' + text));
           return;
         }
         if (settings.stream) {
+          if (sseBuffer) {
+            consumeSseLine(sseBuffer);
+          }
           done(answer);
           return;
         }
@@ -1503,7 +1461,8 @@ function ensureAgentRuntime(context, settings) {
       blocked_prefixes: settings.command.blockedPrefixes || [],
       always_confirm: settings.command.alwaysConfirm === true,
       audit_log: path.join('logs', 'commands.log'),
-      max_output_bytes: settings.command.maxOutputBytes || 65536
+      max_output_bytes: settings.command.maxOutputBytes || 65536,
+      max_tool_rounds: 8
     },
     memory: {
       enabled: settings.memory.enabled !== false,
@@ -1592,7 +1551,11 @@ async function auditCommand(context, command, error) {
   const log = path.join(context.globalStorageUri.fsPath, 'logs', 'commands.log');
   ensureDir(path.dirname(log));
   const status = error ? error.message : 'ok';
-  fs.appendFileSync(log, new Date().toISOString() + '\t' + status + '\t' + command + '\n', 'utf8');
+  fs.appendFileSync(log, new Date().toISOString() + '\t' + auditField(status) + '\t' + auditField(command) + '\n', 'utf8');
+}
+
+function auditField(value) {
+  return String(value || '').replace(/\\/g, '\\\\').replace(/\r/g, '\\r').replace(/\n/g, '\\n').replace(/\t/g, '\\t');
 }
 
 function extractAgentAction(text) {
@@ -1741,6 +1704,15 @@ function chatHtml(webview) {
       vscode.postMessage({ type: 'send', text });
     }
 
+    function replaceHistory(history) {
+      streaming = null;
+      streamingText = '';
+      while (messages.firstChild) messages.removeChild(messages.firstChild);
+      (Array.isArray(history) ? history : []).forEach((item) => {
+        append(item.role || 'system', item.text || '', item.parts);
+      });
+    }
+
     function renderAssistantParts(container, parts, fallback) {
       while (container.firstChild) container.removeChild(container.firstChild);
       const list = Array.isArray(parts) && parts.length ? parts : [{ kind: 'answer', label: '正式回答', content: fallback || '', collapsed: false }];
@@ -1802,6 +1774,9 @@ function chatHtml(webview) {
     window.addEventListener('message', (event) => {
       const msg = event.data || {};
       if (msg.type === 'state') {
+        if (Array.isArray(msg.history)) {
+          replaceHistory(msg.history);
+        }
         document.getElementById('status').textContent = 'Session: ' + msg.sessionTitle + ' / Model: ' + msg.model + ' / memory: ' + msg.messages + ' messages, ' + msg.contextItems + ' context' + (msg.working ? ' / working' : '');
       } else if (msg.type === 'append') {
         append(msg.role, msg.text);
@@ -1811,6 +1786,7 @@ function chatHtml(webview) {
       } else if (msg.type === 'assistantDelta') {
         streamingText += msg.text || '';
         if (!streaming) streaming = append('assistant', '正在生成...');
+        streaming.textContent = streamingText || '正在生成...';
         messages.scrollTop = messages.scrollHeight;
       } else if (msg.type === 'assistantDone') {
         if (!streaming) streaming = append('assistant', '');

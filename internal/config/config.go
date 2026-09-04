@@ -47,6 +47,7 @@ type CommandConfig struct {
 	AlwaysConfirm   bool     `json:"always_confirm"`
 	AuditLog        string   `json:"audit_log"`
 	MaxOutputBytes  int      `json:"max_output_bytes"`
+	MaxToolRounds   int      `json:"max_tool_rounds"`
 }
 
 type MemoryConfig struct {
@@ -73,6 +74,7 @@ func Default() Config {
 			AlwaysConfirm:   false,
 			AuditLog:        filepath.Join("logs", "commands.log"),
 			MaxOutputBytes:  65536,
+			MaxToolRounds:   8,
 		},
 		Memory: MemoryConfig{
 			Enabled:         true,
@@ -145,6 +147,9 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.Command.MaxOutputBytes == 0 {
 		cfg.Command.MaxOutputBytes = def.Command.MaxOutputBytes
+	}
+	if cfg.Command.MaxToolRounds <= 0 {
+		cfg.Command.MaxToolRounds = def.Command.MaxToolRounds
 	}
 	if cfg.Memory.SessionFile == "" {
 		cfg.Memory.SessionFile = def.Memory.SessionFile

@@ -1,6 +1,7 @@
 package docs
 
 import (
+	"archive/zip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -76,5 +77,47 @@ func TestParseRowsReadsMarkdownTable(t *testing.T) {
 	}
 	if rows[1][0] != "Alice" || rows[1][1] != "9" {
 		t.Fatalf("data = %#v", rows[1])
+	}
+}
+
+func TestReadXlsxPreservesSparseColumnsAndRichInlineText(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sparse.xlsx")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := zip.NewWriter(file)
+	sheet, err := zw.Create("xl/worksheets/sheet1.xml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = sheet.Write([]byte(`<?xml version="1.0" encoding="UTF-8"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>
+<row r="1"><c r="A1" t="inlineStr"><is><r><t>Hello</t></r><r><t> World</t></r></is></c><c r="C1" t="inlineStr"><is><t>Right</t></is></c></row>
+</sheetData></worksheet>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	text, err := Read(path, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(text, "Hello World\t\tRight") {
+		t.Fatalf("xlsx text = %q", text)
+	}
+}
+
+func TestCellColumnParsesExcelReferences(t *testing.T) {
+	for ref, want := range map[string]int{"A1": 1, "Z9": 26, "AA2": 27, "BC10": 55, "": 0} {
+		if got := cellColumn(ref); got != want {
+			t.Fatalf("cellColumn(%q) = %d, want %d", ref, got, want)
+		}
 	}
 }

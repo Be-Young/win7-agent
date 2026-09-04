@@ -9,7 +9,7 @@
 
 ## 安装
 
-1. 将 `win7-agent-vscode-0.4.3.vsix` 传入内网电脑。
+1. 将 `win7-agent-vscode-0.4.4.vsix` 传入内网电脑。
 2. 打开 VS Code。
 3. 进入扩展面板，点击右上角 `...`。
 4. 选择 `Install from VSIX...`，选中该 `.vsix` 文件。
@@ -18,7 +18,7 @@
 也可以在命令行安装：
 
 ```bat
-code --install-extension win7-agent-vscode-0.4.3.vsix
+code --install-extension win7-agent-vscode-0.4.4.vsix
 ```
 
 ## 基础配置
@@ -88,13 +88,14 @@ Win7 Agent: Open Chat
 ```
 ````
 
-支持 `create`、`write`、`replace`、`delete`。插件只允许当前工作区内的相对路径，并拒绝 `../`、绝对路径和盘符路径。
+支持 `create`、`write`、`replace`、`delete`。插件只允许当前工作区内的相对路径，并拒绝 `../`、绝对路径和盘符路径；项目扫描会跳过符号链接，文件修改也不能沿符号链接写出工作区。
 
 会话管理：
 
 - 每个会话的对话和上下文相互隔离。
 - `New` 会创建空白新会话，当前会话自动保留到历史。
 - `Sessions` 可以切换历史会话。
+- 打开聊天或切换会话后，会恢复显示该会话的历史消息。
 - `Rename` 可以更改当前会话标题。
 - `Delete` 可以删除指定历史会话。
 - `Clear` 只清空当前会话。
@@ -234,6 +235,8 @@ Win7 Agent: Read URL into Context
 ```
 
 所有命令输出会写入 `Win7 Agent` 输出面板，审计日志保存在 VS Code 扩展的全局存储目录。
+
+高危和禁止前缀会检查复合命令的每一段；例如 `echo ready && del temp.txt` 不能绕过确认。
 
 ## Skill
 

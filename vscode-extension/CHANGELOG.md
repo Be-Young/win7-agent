@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.4.4
+
+- Fixed live SSE text not appearing in the chat body until the response completed.
+- Restored visible conversation history when opening, switching, clearing, or deleting sessions.
+- Persisted real command and file tool results during continuous work instead of synthetic step placeholders.
+- Added CLI multi-step command tool calls with result feedback and a configurable eight-round default limit.
+- Hardened command policies so high-risk commands in compound shell expressions cannot bypass checks.
+- Escaped control characters in command audit records to prevent forged log lines.
+- Prevented workspace scans and model file changes from following symbolic links outside the project.
+- Fixed nested workspace scanning when custom text extensions exclude Markdown.
+- Preserved sparse Excel column positions and all rich inline-text runs when the bundled CLI reads `.xlsx` files.
+- Preserved explicit Authorization headers and allowed model profiles to clear an inherited API key.
+
 ## 0.4.3
 
 - Enabled continuous work by default for every chat send and removed the chat `Work` toggle.

@@ -42,6 +42,9 @@ func TestLoadAppliesDefaultsAndUserConfig(t *testing.T) {
 	if cfg.Command.MaxOutputBytes == 0 {
 		t.Fatal("Command.MaxOutputBytes default was not applied")
 	}
+	if cfg.Command.MaxToolRounds != 8 {
+		t.Fatalf("Command.MaxToolRounds = %d", cfg.Command.MaxToolRounds)
+	}
 	if len(cfg.Command.ConfirmPrefixes) != 2 {
 		t.Fatalf("ConfirmPrefixes = %#v", cfg.Command.ConfirmPrefixes)
 	}
